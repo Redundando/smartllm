@@ -1,8 +1,8 @@
 """
 Example showing how to use the SmartLLM sources functionality
 """
-from smart_llm import SmartLLM
-import config
+from smartllm.smart_llm import SmartLLM
+import _config as config
 
 def perplexity_sources_example():
     """

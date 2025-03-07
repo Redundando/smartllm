@@ -6,10 +6,10 @@ from enum import Enum
 from logorator import Logger
 import json
 
-from llm_provider import LLMProvider
-from perplexity_provider import PerplexityProvider
-from anthropic_provider import AnthropicProvider
-from openai_provider import OpenAIProvider
+from .llm_provider import LLMProvider
+from .perplexity_provider import PerplexityProvider
+from .anthropic_provider import AnthropicProvider
+from .openai_provider import OpenAIProvider
 
 
 class LLMRequestState(Enum):

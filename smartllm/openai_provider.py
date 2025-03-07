@@ -1,6 +1,6 @@
 from typing import Union, Optional, Dict, List, Any
 from openai import OpenAI
-from llm_provider import LLMProvider
+from .llm_provider import LLMProvider
 from logorator import Logger
 import json
 

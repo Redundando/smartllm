@@ -87,8 +87,15 @@ class SmartLLM(JSONCache):
     def __call__(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
         return self.generate_response(callback=callback)
 
+    def _default_stream_callback(self, chunk: str) -> None:
+        # Simple implementation that just prints the chunk
+        print(chunk, end="", flush=True)
+
     def generate_response(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
         if self.config.stream:
+            if callback is None:
+                callback = self._default_stream_callback
+                Logger.note("Using default stream callback")
             return self.generate_streaming(callback=callback)
         else:
             return self.generate()
@@ -175,7 +182,30 @@ class SmartLLM(JSONCache):
             self.json_cache_save()
 
     @Cached()
-    def _get_streaming_llm_response(self, callback: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    def _get_cached_streaming_response(self) -> Dict[str, Any]:
+        provider, messages, params = self._prepare_request_params(include_stream=True)
+
+        if self.config.base == "anthropic":
+            from .streaming.provider_streamers.anthropic_streamer import AnthropicStreamer
+            streamer = AnthropicStreamer()
+            full_text = streamer.stream(
+                client=self.client,
+                model=self.config.model,
+                messages=messages,
+                params=params,
+                callback=lambda x: None  # Empty callback to avoid affecting cache key
+            )
+            result = streamer.format_response(full_text)
+        elif self.config.base == "openai":
+            raise NotImplementedError("OpenAI streaming not yet implemented")
+        elif self.config.base == "perplexity":
+            raise NotImplementedError("Perplexity streaming not yet implemented")
+        else:
+            raise ValueError(f"Streaming not supported for provider: {self.config.base}")
+
+        return result
+
+    def _get_streaming_llm_response(self, callback: Callable[[str], None]) -> Dict[str, Any]:
         provider, messages, params = self._prepare_request_params(include_stream=True)
 
         if self.config.base == "anthropic":
@@ -199,21 +229,23 @@ class SmartLLM(JSONCache):
         return result
 
     @Logger()
-    def generate_streaming(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
+    def generate_streaming(self, callback: Callable[[str], None]) -> 'SmartLLM':
         Logger.note(f"Starting streaming LLM request for {self.config.base}/{self.config.model}")
 
         if not self._streamer:
             raise ValueError("Streamer not initialized")
 
+        # First check if we have a cached response
         try:
-            cached_result = self._get_streaming_llm_response(callback=callback)
+            cached_result = self._get_cached_streaming_response()
 
             if cached_result:
-                Logger.note("Using cached streaming result")
+                Logger.note("Using cached response (no streaming)")
                 self.result = cached_result
                 self.stream_result = cached_result
                 self.state = LLMRequestState.COMPLETED
 
+                # Return the full content at once for cached responses
                 if callback and cached_result.get("content"):
                     callback(cached_result.get("content"))
 

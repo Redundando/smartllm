@@ -1,6 +1,4 @@
 from smartllm import SmartLLM
-import time
-import os
 import config
 
 def chunk_callback(chunk):
@@ -23,4 +21,4 @@ llm = SmartLLM(
 )
 
 print("\nStarting request with background streaming...")
-llm.generate_response(callback=chunk_callback)
+llm.generate_response()

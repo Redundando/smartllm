@@ -41,8 +41,11 @@ class BackgroundStreamer(Streamer):
         def internal_callback(chunk: str):
             self.chunk_queue.put(chunk)
             self._callback_history.append(chunk)
+            # Debug log to confirm callback is being used
+            Logger.note(f"BackgroundStreamer received chunk of {len(chunk)} chars")
             if callback:
                 try:
+                    # Directly pass the chunk to the user's callback
                     callback(chunk)
                 except Exception as e:
                     Logger.note(f"Error in user callback: {str(e)}")
@@ -70,6 +73,7 @@ class BackgroundStreamer(Streamer):
             if base == "anthropic":
                 from ..streaming.provider_streamers.anthropic_streamer import AnthropicStreamer
                 streamer = AnthropicStreamer()
+                # Make sure we're passing the callback correctly
                 full_text = streamer.stream(
                     client=client,
                     model=model,

@@ -23,6 +23,8 @@ class AnthropicStreamer:
             for text in stream.text_stream:
                 if text:
                     full_text += text
+                    # Don't log every chunk to avoid cluttering logs
+                    # Just directly use the callback
                     callback(text)
 
         Logger.note("Completed streaming response from Anthropic API")

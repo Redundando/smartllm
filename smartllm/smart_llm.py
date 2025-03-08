@@ -175,12 +175,8 @@ class SmartLLM(JSONCache):
             self.json_cache_save()
 
     @Cached()
-    def _get_streaming_llm_response(self) -> Dict[str, Any]:
+    def _get_streaming_llm_response(self, callback: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         provider, messages, params = self._prepare_request_params(include_stream=True)
-
-        provider_instance = self.provider_manager.get_provider(self.config.base)
-
-        full_text = ""
 
         if self.config.base == "anthropic":
             from .streaming.provider_streamers.anthropic_streamer import AnthropicStreamer
@@ -190,7 +186,7 @@ class SmartLLM(JSONCache):
                 model=self.config.model,
                 messages=messages,
                 params=params,
-                callback=None
+                callback=callback
             )
             result = streamer.format_response(full_text)
         elif self.config.base == "openai":
@@ -210,7 +206,8 @@ class SmartLLM(JSONCache):
             raise ValueError("Streamer not initialized")
 
         try:
-            cached_result = self._get_streaming_llm_response()
+            cached_result = self._get_streaming_llm_response(callback=callback)
+
             if cached_result:
                 Logger.note("Using cached streaming result")
                 self.result = cached_result

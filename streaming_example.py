@@ -23,4 +23,4 @@ llm = SmartLLM(
 )
 
 print("\nStarting request with background streaming...")
-llm.generate_response()
+llm.generate_response(callback=chunk_callback)

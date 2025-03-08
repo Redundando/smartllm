@@ -1,50 +1,56 @@
 from smartllm import SmartLLM
+import time
 import os
-import sys
 import config
 
-def handle_chunk(chunk):
-    """Process each chunk as it arrives."""
-    # Print the chunk without a newline and flush the buffer
+def chunk_callback(chunk):
     print(chunk, end="", flush=True)
 
-    # You can also process the chunk in other ways:
-    # - Update a UI
-    # - Accumulate specific information
-    # - Parse for special tokens/commands
-    # - etc.
+api_key = config.ANTHROPIC_API_KEY
+if not api_key:
+    print("Error: ANTHROPIC_API_KEY environment variable not set")
+    exit(1)
 
+print("Creating SmartLLM instance with streaming enabled...")
+llm = SmartLLM(
+    base="anthropic",
+    model="claude-3-7-sonnet-20250219",
+    api_key=api_key,
+    prompt="Write a short poem about artificial intelligence.",
+    temperature=0.7,
+    max_output_tokens=1000,
+    stream=True
+)
 
-def main():
-    # Get API key from environment variable
-    api_key = config.ANTHROPIC_API_KEY
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable not set")
-        sys.exit(1)
+print("\nStarting request with background streaming...")
+llm.generate_streaming(callback=chunk_callback)
 
-    # Create an instance of SmartLLM with streaming enabled
-    llm = SmartLLM(
-        base="anthropic",
-        model="claude-3-7-sonnet-20250219",
-        api_key=api_key,
-        prompt="Write a short story about a robot discovering emotions. Make it unfold gradually.",
-        temperature=0.7,
-        max_output_tokens=1000,
-        stream=True  # This enables streaming mode
-    )
+print("\n\nContinuing with other work while streaming happens in background...")
 
-    print("Generating response...\n")
+for i in range(5):
+    print(f"Doing other work... ({i+1}/5)")
+    time.sleep(1)
 
-    # Start generating with streaming
-    llm.generate_streaming(callback=handle_chunk)
+print("\nWaiting for streaming to complete...")
+llm.wait_for_completion()
 
-    # Check for errors after completion
-    if llm.is_failed():
-        print(f"\n\nError occurred: {llm.get_error()}")
-        return
+if llm.is_failed():
+    print(f"\nError occurred: {llm.get_error()}")
+else:
+    print("\nStreaming completed successfully!")
 
-    print("\n\nGeneration complete!")
+print("\n--- Creating a second instance with the same parameters ---")
+print("This should use the cached result (instant playback):")
 
+llm2 = SmartLLM(
+    base="anthropic",
+    model="claude-3-7-sonnet-20250219",
+    api_key=api_key,
+    prompt="Write a short poem about artificial intelligence.",
+    temperature=0.7,
+    max_output_tokens=1000,
+    stream=True
+)
 
-if __name__ == "__main__":
-    main()
+print("\nStarting second request (using cache):")
+llm2.generate_streaming(callback=chunk_callback)

@@ -1,71 +1,62 @@
 from smartllm import SmartLLM
+import time
 import os
-import sys
 import config
 
-def handle_chunk(chunk):
-    """Process each chunk as it arrives."""
-    # Print the chunk without a newline and flush the buffer
-    print(chunk, end="", flush=True)
-
 def main():
-    # Get API key from environment variable
     api_key = config.ANTHROPIC_API_KEY
     if not api_key:
         print("Error: ANTHROPIC_API_KEY environment variable not set")
-        sys.exit(1)
+        return
 
-    print("Example 1: Basic streaming with custom callback")
-    print("-----------------------------------------------")
-
-    # Create an instance of SmartLLM with streaming enabled
+    print("Creating SmartLLM instance (non-streaming)...")
     llm = SmartLLM(
         base="anthropic",
         model="claude-3-7-sonnet-20250219",
         api_key=api_key,
-        prompt="Write a short story about a robot discovering emotions. Make it unfold gradually.",
+        prompt="What are the three most important considerations when designing a REST API?",
         temperature=0.7,
-        max_output_tokens=1000,
-        stream=True  # This enables streaming mode
+        max_output_tokens=1000
     )
 
-    print("Generating response with custom callback...\n")
+    print("Starting non-streaming request...")
+    llm.generate()
 
-    # Start generating with streaming
-    llm.generate_streaming(callback=handle_chunk)
+    print("Request running in background...")
+    print("Doing other work while waiting for response...")
 
-    # Check for errors after completion
+    # Simulate doing other work while request runs
+    for i in range(3):
+        print(f"Working... ({i + 1}/3)")
+        time.sleep(1)
+
+    print("Waiting for completion...")
+    llm.wait_for_completion()
+
     if llm.is_failed():
-        print(f"\n\nError occurred: {llm.get_error()}")
+        print(f"Error occurred: {llm.get_error()}")
     else:
-        print("\n\nGeneration complete!")
+        print("\nResponse received:\n")
+        print(llm.content)
 
-    print("\n\nExample 2: Streaming with default logging callback")
-    print("--------------------------------------------------")
+    print("\n--- Creating a second instance with the same parameters ---")
+    print("This should use the cached result:")
 
-    # Create another instance with streaming enabled
     llm2 = SmartLLM(
         base="anthropic",
         model="claude-3-7-sonnet-20250219",
         api_key=api_key,
-        prompt="Explain quantum computing in simple terms.",
+        prompt="What are the three most important considerations when designing a REST API?",
         temperature=0.7,
-        max_output_tokens=1000,
-        stream=True
+        max_output_tokens=1000
     )
 
-    print("Generating response with default callback...\n")
+    print("Generating response from cache...")
+    llm2.generate().wait_for_completion()
 
-    # Start generating with streaming, using the default callback
-    llm2.generate_streaming()
+    print("Response from cache:")
+    print(llm2.content)
 
-    # Check for errors after completion
-    if llm2.is_failed():
-        print(f"Error occurred: {llm2.get_error()}")
-    else:
-        print("Generation complete!")
-        print("\nFinal response:")
-        print(llm2.content)
 
 if __name__ == "__main__":
     main()

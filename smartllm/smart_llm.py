@@ -1,31 +1,17 @@
 from typing import Union, Optional, Dict, List, Any, Callable
-from cacherator import Cached, JSONCache
-from hashlib import sha256
-from concurrent.futures import ThreadPoolExecutor
-from enum import Enum
+from cacherator import Cached
+from concurrent.futures import Future
 from logorator import Logger
-import json
 
-from .llm_provider import LLMProvider
-from .perplexity_provider import PerplexityProvider
-from .anthropic_provider import AnthropicProvider
-from .openai_provider import OpenAIProvider
-from .llm_streamer import SmartLLMStreamer, LLMRequestState
+from .config import Configuration
+from .provider_manager import ProviderManager
+from .cache.manager import CacheManager
+from .execution.executor import RequestExecutor
+from .execution.state import LLMRequestState
+from .streaming.background import BackgroundStreamer
 
 
-class SmartLLM(JSONCache):
-    TOKEN_PER_CHAR = 0.3
-    MAX_INPUT_TOKENS = 10_000
-    MAX_OUTPUT_TOKENS = 10_000
-
-    _thread_pool = ThreadPoolExecutor(max_workers=10)
-
-    PROVIDERS: Dict[str, LLMProvider] = {
-        "perplexity": PerplexityProvider(),
-        "anthropic": AnthropicProvider(),
-        "openai": OpenAIProvider()
-    }
-
+class SmartLLM:
     def __init__(
             self,
             base: str = "",
@@ -46,89 +32,74 @@ class SmartLLM(JSONCache):
             json_schema: Optional[Dict[str, Any]] = None,
             stream: bool = False,
     ):
-        # Set basic parameters first to construct identifier
-        self.base = base
-        self.model = model
-        self.api_key = api_key
-        self.prompt = prompt
-        self.max_input_tokens = max_input_tokens if max_input_tokens is not None else self.MAX_INPUT_TOKENS
-        self.max_output_tokens = max_output_tokens if max_output_tokens is not None else self.MAX_OUTPUT_TOKENS
-        self.output_type = output_type
-        self.temperature = temperature
-        self.top_p = top_p
-        self.frequency_penalty = frequency_penalty
-        self.presence_penalty = presence_penalty
-        self.system_prompt = system_prompt
-        self.search_recency_filter = search_recency_filter
-        self.return_citations = return_citations
-        self.json_mode = json_mode
-        self.json_schema = json_schema
-        self.stream = stream
+        self.config = Configuration(
+            base=base,
+            model=model,
+            api_key=api_key,
+            prompt=prompt,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            output_type=output_type,
+            temperature=temperature,
+            top_p=top_p,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            system_prompt=system_prompt,
+            search_recency_filter=search_recency_filter,
+            return_citations=return_citations,
+            json_mode=json_mode,
+            json_schema=json_schema,
+            stream=stream,
+        )
 
-        # Initialize streaming handler if streaming is enabled
-        self._streamer = SmartLLMStreamer() if stream else None
+        self.provider_manager = ProviderManager()
+        self.executor = RequestExecutor()
+        self.cache = CacheManager(data_id=self.config.identifier)
 
-        # Call JSONCache.__init__ first to restore any cached values
-        # Skip caching for streaming requests
-        if not stream:
-            JSONCache.__init__(self, data_id=self.identifier, directory="data/llm")
-
-        # Initialize state variables that shouldn't be cached
         self.state = LLMRequestState.NOT_STARTED
         self.error = None
         self._future = None
-        self._client = None
         self._generation_result = None
 
+        if self.config.stream:
+            self._streamer = BackgroundStreamer(self.executor.thread_pool)
+            if self.cache.has_result("stream_result"):
+                self._streamer._cached_result = self.cache.get_result("stream_result")
+                self._streamer._generation_result = self._streamer._cached_result
+                self._streamer.state = LLMRequestState.COMPLETED
+                self.state = LLMRequestState.COMPLETED
+        else:
+            self._streamer = None
+
+            if self.cache.has_result():
+                self._generation_result = self.cache.get_result()
+                self.state = LLMRequestState.COMPLETED
+
     def __str__(self):
-        return self.identifier
-
-    @property
-    def identifier(self) -> str:
-        prompt_str = str(self.prompt)
-        truncated_prompt = prompt_str[:30] + "..." if len(prompt_str) > 30 else prompt_str
-        base_id = f"{self.base}_{self.model}_{truncated_prompt}"
-
-        # Create a more stable hash input
-        hash_input = f"{self.base}_{self.model}_{str(self.prompt)}_{self.max_input_tokens}_{self.max_output_tokens}"
-        hash_input += f"_{self.temperature}_{self.top_p}_{self.frequency_penalty}_{self.presence_penalty}"
-        hash_input += f"_{self.system_prompt}_{self.search_recency_filter}"
-        hash_input += f"_{self.return_citations}_{self.json_mode}_{self.stream}"
-
-        # For JSON schema, use a content hash instead of string representation
-        if self.json_schema:
-            schema_str = json.dumps(self.json_schema, sort_keys=True)
-            schema_hash = sha256(schema_str.encode()).hexdigest()[:10]
-            hash_input += f"_schema_{schema_hash}"
-
-        _hash = sha256(hash_input.encode()).hexdigest()[:10]
-        return f"{base_id}_{_hash}"
+        return self.config.identifier
 
     @property
     def client(self) -> Any:
-        if not self._client and self.base in self.PROVIDERS:
-            provider = self.PROVIDERS[self.base]
-            self._client = provider.create_client(
-                api_key=self.api_key
-            )
-        return self._client
+        return self.provider_manager.get_client(
+            base=self.config.base,
+            api_key=self.config.api_key
+        )
 
     @Logger()
     def generate(self) -> 'SmartLLM':
-        Logger.note(f"Starting LLM request for {self.base}/{self.model}")
+        Logger.note(f"Starting LLM request for {self.config.base}/{self.config.model}")
 
         if self.state == LLMRequestState.PENDING:
-            Logger.note("Request already in progress, not starting a new one")
+            Logger.note("Request already in progress")
             return self
 
         if self.state == LLMRequestState.COMPLETED:
-            Logger.note("Request already completed, not starting a new one")
+            Logger.note("Request already completed")
             return self
 
         self.state = LLMRequestState.PENDING
 
-        # Handle streaming requests differently
-        if self.stream:
+        if self.config.stream:
             try:
                 self._handle_streaming_request()
             except Exception as e:
@@ -137,83 +108,101 @@ class SmartLLM(JSONCache):
                 Logger.note(f"LLM request failed: {str(e)}")
                 raise
         else:
-            # Use thread pool for non-streaming requests
-            self._future = self._thread_pool.submit(self._generate_in_background)
+            self._future = self.executor.submit(self._generate_in_background)
 
         return self
 
     def _handle_streaming_request(self) -> None:
-        """
-        Internal method to handle streaming requests.
-        Uses the SmartLLMStreamer to process streaming.
-        """
-        if self.base not in self.PROVIDERS:
-            raise ValueError(f"Provider {self.base} not supported for streaming")
+        if not self._streamer:
+            raise ValueError("Streamer not initialized")
 
-        provider = self.PROVIDERS[self.base]
-        messages = self._prepare_messages()
-        params = self._prepare_parameters(messages)
+        if self._streamer.is_completed():
+            self._generation_result = self._streamer._generation_result
+            self.state = LLMRequestState.COMPLETED
+            return
 
-        # Use the streamer to handle the streaming request
-        self._generation_result = self._streamer.generate(
-            base=self.base,
+        provider = self.provider_manager.get_provider(self.config.base)
+        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
+        params = provider.prepare_parameters(
+            model=self.config.model,
+            messages=messages,
+            max_tokens=self.config.max_output_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            frequency_penalty=self.config.frequency_penalty,
+            presence_penalty=self.config.presence_penalty,
+            search_recency_filter=self.config.search_recency_filter,
+            json_mode=self.config.json_mode,
+            json_schema=self.config.json_schema,
+            system_prompt=self.config.system_prompt if self.config.base == "anthropic" else None,
+            stream=True
+        )
+
+        self._streamer.generate(
+            base=self.config.base,
             provider=provider,
             client=self.client,
-            model=self.model,
+            model=self.config.model,
             messages=messages,
             params=params
         )
 
-        # Update state based on streamer state
         self.state = self._streamer.state
         self.error = self._streamer.error
 
+        if self.is_completed():
+            self.cache.store_result(self._streamer._generation_result, "stream_result")
+
     @Logger()
     def generate_streaming(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
-        """
-        Generate a streaming response from the LLM, calling the callback with each chunk.
+        Logger.note(f"Starting streaming LLM request for {self.config.base}/{self.config.model}")
 
-        Args:
-            callback: Function that will be called with each text chunk. 
-                     If None, uses a default callback that logs the chunks.
+        if not self._streamer:
+            raise ValueError("Streamer not initialized")
 
-        Returns:
-            self for chaining
-        """
-        Logger.note(f"Starting streaming LLM request for {self.base}/{self.model}")
-
-        if self.base not in self.PROVIDERS:
-            raise ValueError(f"Provider {self.base} not supported")
-
-        if self.state == LLMRequestState.PENDING:
-            Logger.note("Request already in progress, not starting a new one")
+        if self._streamer.is_completed():
+            Logger.note("Using cached streaming result")
+            self._streamer.replay_chunks(callback if callback else self._streamer.handle_chunk)
+            self._generation_result = self._streamer._generation_result
+            self.state = LLMRequestState.COMPLETED
             return self
 
-        if self.state == LLMRequestState.COMPLETED:
-            Logger.note("Request already completed, not starting a new one")
-            return self
+        provider = self.provider_manager.get_provider(self.config.base)
+        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
+        params = provider.prepare_parameters(
+            model=self.config.model,
+            messages=messages,
+            max_tokens=self.config.max_output_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            frequency_penalty=self.config.frequency_penalty,
+            presence_penalty=self.config.presence_penalty,
+            search_recency_filter=self.config.search_recency_filter,
+            json_mode=self.config.json_mode,
+            json_schema=self.config.json_schema,
+            system_prompt=self.config.system_prompt if self.config.base == "anthropic" else None,
+            stream=True
+        )
 
         self.state = LLMRequestState.PENDING
 
         try:
-            provider = self.PROVIDERS[self.base]
-            messages = self._prepare_messages()
-            params = self._prepare_parameters(messages)
-
-            # Use the streamer to handle the streaming request
-            self._generation_result = self._streamer.generate(
-                base=self.base,
+            self._streamer.generate(
+                base=self.config.base,
                 provider=provider,
                 client=self.client,
-                model=self.model,
+                model=self.config.model,
                 messages=messages,
                 params=params,
                 callback=callback
             )
 
-            # Update state based on streamer state
             self.state = self._streamer.state
             self.error = self._streamer.error
+            self._generation_result = self._streamer._generation_result
+
+            if self.is_completed():
+                self.cache.store_result(self._generation_result, "stream_result")
 
         except Exception as e:
             self.state = LLMRequestState.FAILED
@@ -225,74 +214,42 @@ class SmartLLM(JSONCache):
 
     @Cached()
     def _get_cached_generation(self) -> Dict[str, Any]:
-        """
-        Get cached generation result if available.
-        If no cache exists, perform the API call and cache the result.
-        """
-        messages = self._prepare_messages()
-        params = self._prepare_parameters(messages)
+        provider = self.provider_manager.get_provider(self.config.base)
+        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
+        params = provider.prepare_parameters(
+            model=self.config.model,
+            messages=messages,
+            max_tokens=self.config.max_output_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            frequency_penalty=self.config.frequency_penalty,
+            presence_penalty=self.config.presence_penalty,
+            search_recency_filter=self.config.search_recency_filter,
+            json_mode=self.config.json_mode,
+            json_schema=self.config.json_schema,
+            system_prompt=self.config.system_prompt if self.config.base == "anthropic" else None
+        )
 
-        provider = self.PROVIDERS[self.base]
         raw_response = provider.generate(
             client=self.client,
-            model=self.model,
+            model=self.config.model,
             messages=messages,
             params=params
         )
 
-        # Create a serializable response using the provider's implementation
-        return provider.create_serializable_response(raw_response, self.json_mode)
-
-    def _prepare_messages(self) -> List[Dict[str, str]]:
-        provider = self.PROVIDERS[self.base]
-        return provider.prepare_messages(self.prompt, self.system_prompt)
-
-    def _prepare_parameters(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
-        provider = self.PROVIDERS[self.base]
-
-        # Add system_prompt to parameters for Anthropic
-        if self.base == "anthropic":
-            return provider.prepare_parameters(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_output_tokens,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                frequency_penalty=self.frequency_penalty,
-                presence_penalty=self.presence_penalty,
-                search_recency_filter=self.search_recency_filter,
-                json_mode=self.json_mode,
-                json_schema=self.json_schema,
-                system_prompt=self.system_prompt,
-                stream=self.stream
-            )
-        else:
-            return provider.prepare_parameters(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_output_tokens,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                frequency_penalty=self.frequency_penalty,
-                presence_penalty=self.presence_penalty,
-                search_recency_filter=self.search_recency_filter,
-                json_mode=self.json_mode,
-                json_schema=self.json_schema,
-                stream=self.stream
-            )
+        return provider.create_serializable_response(raw_response, self.config.json_mode)
 
     def _generate_in_background(self) -> Dict[str, Any]:
         try:
-            if self.base not in self.PROVIDERS:
-                raise ValueError(f"Provider {self.base} not supported")
+            Logger.note(f"Executing LLM request in background thread for {self.config.base}/{self.config.model}")
 
-            Logger.note(f"Executing LLM request in background thread for {self.base}/{self.model}")
-
-            # This will either get from cache or generate new
-            self._generation_result = self._get_cached_generation()
+            result = self._get_cached_generation()
+            self._generation_result = result
             self.state = LLMRequestState.COMPLETED
+            self.cache.store_result(result)
+
             Logger.note(f"LLM request completed successfully")
-            return self._generation_result
+            return result
 
         except Exception as e:
             self.state = LLMRequestState.FAILED
@@ -312,9 +269,8 @@ class SmartLLM(JSONCache):
         if self.state == LLMRequestState.FAILED:
             return False
 
-        # For streaming requests, delegate to the streamer
-        if self.stream:
-            return self._streamer.is_completed()
+        if self.config.stream:
+            return self._streamer.wait_for_completion(timeout)
 
         if self._future is None:
             Logger.note("No future exists, request may not have been started properly")
@@ -328,10 +284,30 @@ class SmartLLM(JSONCache):
             Logger.note(f"Error while waiting for completion: {str(e)}")
             return False
 
+    def is_failed(self) -> bool:
+        if self.config.stream and self._streamer:
+            return self._streamer.is_failed()
+        return self.state == LLMRequestState.FAILED
+
     def is_completed(self) -> bool:
-        """
-        Check if the request has completed successfully.
-        For streaming requests, delegates to the streamer.
-        """
-        if self.stream and self._streamer:
-            return self._streamer.is_complete
+        if self.config.stream and self._streamer:
+            return self._streamer.is_completed()
+        return self.state == LLMRequestState.COMPLETED
+
+    def is_pending(self) -> bool:
+        if self.config.stream and self._streamer:
+            return self._streamer.is_pending()
+        return self.state == LLMRequestState.PENDING
+
+    def get_error(self) -> Optional[str]:
+        if self.config.stream and self._streamer:
+            return self._streamer.get_error()
+        return self.error
+
+    @property
+    def content(self) -> str:
+        if self.config.stream and self._streamer and self._streamer.is_completed():
+            return self._streamer.get_content()
+        if not self._generation_result:
+            return ""
+        return self._generation_result.get("content", "")

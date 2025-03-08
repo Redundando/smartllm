@@ -1,7 +1,6 @@
 from typing import Union, Optional, Dict, List, Any
 from logorator import Logger
 
-
 class LLMProvider:
     def create_client(self, api_key: str, base_url: Optional[str] = None) -> Any:
         pass
@@ -36,6 +35,7 @@ class LLMProvider:
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
             system_prompt: Optional[str] = None,
+            stream: bool = False,
     ) -> Dict[str, Any]:
         pass
 
@@ -50,14 +50,9 @@ class LLMProvider:
             self,
             response: Any
     ) -> Optional[Dict[str, Any]]:
-        """Format the JSON response from the API call."""
         return None
 
     def extract_content(self, raw_response: Any) -> str:
-        """
-        Extract the text content from the provider-specific API response.
-        Each provider implementation handles its own response format.
-        """
         raise NotImplementedError("Subclasses must implement this method")
 
     def create_serializable_response(
@@ -65,10 +60,6 @@ class LLMProvider:
             raw_response: Any,
             json_mode: bool = False
     ) -> Dict[str, Any]:
-        """
-        Create a serializable version of the provider-specific API response.
-        Each provider implementation handles its own response format.
-        """
         raise NotImplementedError("Subclasses must implement this method")
 
     def count_tokens(

@@ -1,17 +1,16 @@
 from typing import Union, Optional, Dict, List, Any, Callable
-from cacherator import Cached
+from cacherator import JSONCache, Cached
 from concurrent.futures import Future
 from logorator import Logger
 
 from .config import Configuration
 from .provider_manager import ProviderManager
-from .cache.manager import CacheManager
 from .execution.executor import RequestExecutor
 from .execution.state import LLMRequestState
 from .streaming.background import BackgroundStreamer
 
 
-class SmartLLM:
+class SmartLLM(JSONCache):
     def __init__(
             self,
             base: str = "",
@@ -31,7 +30,10 @@ class SmartLLM:
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
             stream: bool = False,
+            ttl: int = 7,  # Cache responses for a week by default
+            clear_cache: bool = False
     ):
+        # Create configuration object
         self.config = Configuration(
             base=base,
             model=model,
@@ -52,28 +54,38 @@ class SmartLLM:
             stream=stream,
         )
 
+        # Initialize JSONCache with a unique identifier based on the config
+        super().__init__(
+            data_id=self.config.identifier,
+            directory="data/llm",
+            ttl=ttl,
+            clear_cache=clear_cache
+        )
+
+        # Store sanitized config for caching
+        self.cached_config = self.config.safe_config
+
+        # Non-cached runtime components
         self.provider_manager = ProviderManager()
         self.executor = RequestExecutor()
-        self.cache = CacheManager(data_id=self.config.identifier)
-
         self.state = LLMRequestState.NOT_STARTED
         self.error = None
         self._future = None
-        self._generation_result = None
 
+        # Check if we already have a cached result
+        if hasattr(self, "result") and self.result:
+            self.state = LLMRequestState.COMPLETED
+
+        # Handle streaming configuration
         if self.config.stream:
             self._streamer = BackgroundStreamer(self.executor.thread_pool)
-            if self.cache.has_result("stream_result"):
-                self._streamer._cached_result = self.cache.get_result("stream_result")
-                self._streamer._generation_result = self._streamer._cached_result
+            if hasattr(self, "stream_result") and self.stream_result:
+                self._streamer._cached_result = self.stream_result
+                self._streamer._generation_result = self.stream_result
                 self._streamer.state = LLMRequestState.COMPLETED
                 self.state = LLMRequestState.COMPLETED
         else:
             self._streamer = None
-
-            if self.cache.has_result():
-                self._generation_result = self.cache.get_result()
-                self.state = LLMRequestState.COMPLETED
 
     def __str__(self):
         return self.config.identifier
@@ -117,7 +129,7 @@ class SmartLLM:
             raise ValueError("Streamer not initialized")
 
         if self._streamer.is_completed():
-            self._generation_result = self._streamer._generation_result
+            self.result = self._streamer._generation_result
             self.state = LLMRequestState.COMPLETED
             return
 
@@ -151,7 +163,10 @@ class SmartLLM:
         self.error = self._streamer.error
 
         if self.is_completed():
-            self.cache.store_result(self._streamer._generation_result, "stream_result")
+            # Store all results in a single location
+            self.result = self._streamer._generation_result
+            self.stream_result = self._streamer._generation_result
+            self.json_cache_save()
 
     @Logger()
     def generate_streaming(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
@@ -163,7 +178,7 @@ class SmartLLM:
         if self._streamer.is_completed():
             Logger.note("Using cached streaming result")
             self._streamer.replay_chunks(callback if callback else self._streamer.handle_chunk)
-            self._generation_result = self._streamer._generation_result
+            self.result = self._streamer._generation_result
             self.state = LLMRequestState.COMPLETED
             return self
 
@@ -199,10 +214,12 @@ class SmartLLM:
 
             self.state = self._streamer.state
             self.error = self._streamer.error
-            self._generation_result = self._streamer._generation_result
 
             if self.is_completed():
-                self.cache.store_result(self._generation_result, "stream_result")
+                # Store result in a single location
+                self.result = self._streamer._generation_result
+                self.stream_result = self._streamer._generation_result
+                self.json_cache_save()
 
         except Exception as e:
             self.state = LLMRequestState.FAILED
@@ -212,8 +229,9 @@ class SmartLLM:
 
         return self
 
-    @Cached()
-    def _get_cached_generation(self) -> Dict[str, Any]:
+    @Cached()  # Cache for 7 days by default
+    def _get_llm_response(self) -> Dict[str, Any]:
+        """Core method to get an LLM response, wrapped with Cacherator's @Cached decorator"""
         provider = self.provider_manager.get_provider(self.config.base)
         messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
         params = provider.prepare_parameters(
@@ -243,10 +261,15 @@ class SmartLLM:
         try:
             Logger.note(f"Executing LLM request in background thread for {self.config.base}/{self.config.model}")
 
-            result = self._get_cached_generation()
-            self._generation_result = result
+            # Get response (cached if available)
+            result = self._get_llm_response()
+
+            # Store result directly, no need for duplicate storage
+            self.result = result
             self.state = LLMRequestState.COMPLETED
-            self.cache.store_result(result)
+
+            # Explicitly save to cache
+            self.json_cache_save()
 
             Logger.note(f"LLM request completed successfully")
             return result
@@ -306,8 +329,30 @@ class SmartLLM:
 
     @property
     def content(self) -> str:
+        """Get the text content from the result"""
         if self.config.stream and self._streamer and self._streamer.is_completed():
             return self._streamer.get_content()
-        if not self._generation_result:
+        if not hasattr(self, "result") or not self.result:
             return ""
-        return self._generation_result.get("content", "")
+        return self.result.get("content", "")
+
+    @property
+    def json_content(self) -> Optional[Dict[str, Any]]:
+        """Get the JSON content from the result, if available"""
+        if not hasattr(self, "result") or not self.result:
+            return None
+        return self.result.get("json_content")
+
+    @property
+    def sources(self) -> List[str]:
+        """Get citation sources from the result, if available"""
+        if not hasattr(self, "result") or not self.result:
+            return []
+        return self.result.get("citations", [])
+
+    @property
+    def usage(self) -> Dict[str, int]:
+        """Get token usage statistics"""
+        if not hasattr(self, "result") or not self.result:
+            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return self.result.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})

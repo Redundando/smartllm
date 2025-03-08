@@ -2,6 +2,7 @@ from typing import Union, Optional, Dict, List, Any
 from hashlib import sha256
 import json
 
+
 class Configuration:
     def __init__(
             self,
@@ -47,6 +48,7 @@ class Configuration:
 
     @property
     def identifier(self) -> str:
+        """Generate a unique identifier for this configuration for caching purposes"""
         prompt_str = str(self.prompt)
         truncated_prompt = prompt_str[:30] + "..." if len(prompt_str) > 30 else prompt_str
         base_id = f"{self.base}_{self.model}_{truncated_prompt}"
@@ -63,3 +65,39 @@ class Configuration:
 
         _hash = sha256(hash_input.encode()).hexdigest()[:10]
         return f"{base_id}_{_hash}"
+
+    @property
+    def safe_config(self) -> Dict[str, Any]:
+        """Return a copy of config without sensitive information, suitable for caching"""
+        config = {
+            "base": self.base,
+            "model": self.model,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "output_type": self.output_type,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "frequency_penalty": self.frequency_penalty,
+            "presence_penalty": self.presence_penalty,
+            "search_recency_filter": self.search_recency_filter,
+            "return_citations": self.return_citations,
+            "json_mode": self.json_mode,
+            "stream": self.stream
+        }
+
+        # Add non-empty optional fields
+        if self.system_prompt:
+            config["system_prompt"] = self.system_prompt
+
+        if self.json_schema:
+            config["json_schema"] = self.json_schema
+
+        # Store truncated prompt preview
+        if isinstance(self.prompt, str):
+            config["prompt_preview"] = (
+                self.prompt[:100] + "..." if len(self.prompt) > 100 else self.prompt
+            )
+        else:
+            config["prompt_preview"] = f"[Conversation with {len(self.prompt)} messages]"
+
+        return config

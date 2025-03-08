@@ -30,10 +30,9 @@ class SmartLLM(JSONCache):
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
             stream: bool = False,
-            ttl: int = 7,  # Cache responses for a week by default
+            ttl: int = 7,
             clear_cache: bool = False
     ):
-        # Create configuration object
         self.config = Configuration(
             base=base,
             model=model,
@@ -54,7 +53,6 @@ class SmartLLM(JSONCache):
             stream=stream,
         )
 
-        # Initialize JSONCache with a unique identifier based on the config
         super().__init__(
             data_id=self.config.identifier,
             directory="data/llm",
@@ -62,21 +60,17 @@ class SmartLLM(JSONCache):
             clear_cache=clear_cache
         )
 
-        # Store sanitized config for caching
         self.cached_config = self.config.safe_config
 
-        # Non-cached runtime components
         self.provider_manager = ProviderManager()
         self.executor = RequestExecutor()
         self.state = LLMRequestState.NOT_STARTED
         self.error = None
         self._future = None
 
-        # Check if we already have a cached result
         if hasattr(self, "result") and self.result:
             self.state = LLMRequestState.COMPLETED
 
-        # Handle streaming configuration
         if self.config.stream:
             self._streamer = BackgroundStreamer(self.executor.thread_pool)
             if hasattr(self, "stream_result") and self.stream_result:
@@ -89,6 +83,15 @@ class SmartLLM(JSONCache):
 
     def __str__(self):
         return self.config.identifier
+
+    def __call__(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
+        return self.generate_response(callback=callback)
+
+    def generate_response(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
+        if self.config.stream:
+            return self.generate_streaming(callback=callback)
+        else:
+            return self.generate()
 
     @property
     def client(self) -> Any:
@@ -167,10 +170,37 @@ class SmartLLM(JSONCache):
         self.error = self._streamer.error
 
         if self.is_completed():
-            # Store all results in a single location
             self.result = self._streamer._generation_result
             self.stream_result = self._streamer._generation_result
             self.json_cache_save()
+
+    @Cached()
+    def _get_streaming_llm_response(self) -> Dict[str, Any]:
+        provider, messages, params = self._prepare_request_params(include_stream=True)
+
+        provider_instance = self.provider_manager.get_provider(self.config.base)
+
+        full_text = ""
+
+        if self.config.base == "anthropic":
+            from .streaming.provider_streamers.anthropic_streamer import AnthropicStreamer
+            streamer = AnthropicStreamer()
+            full_text = streamer.stream(
+                client=self.client,
+                model=self.config.model,
+                messages=messages,
+                params=params,
+                callback=None
+            )
+            result = streamer.format_response(full_text)
+        elif self.config.base == "openai":
+            raise NotImplementedError("OpenAI streaming not yet implemented")
+        elif self.config.base == "perplexity":
+            raise NotImplementedError("Perplexity streaming not yet implemented")
+        else:
+            raise ValueError(f"Streaming not supported for provider: {self.config.base}")
+
+        return result
 
     @Logger()
     def generate_streaming(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
@@ -179,18 +209,26 @@ class SmartLLM(JSONCache):
         if not self._streamer:
             raise ValueError("Streamer not initialized")
 
-        if self._streamer.is_completed():
-            Logger.note("Using cached streaming result")
-            self._streamer.replay_chunks(callback if callback else self._streamer.handle_chunk)
-            self.result = self._streamer._generation_result
-            self.state = LLMRequestState.COMPLETED
-            return self
+        try:
+            cached_result = self._get_streaming_llm_response()
+            if cached_result:
+                Logger.note("Using cached streaming result")
+                self.result = cached_result
+                self.stream_result = cached_result
+                self.state = LLMRequestState.COMPLETED
 
-        provider, messages, params = self._prepare_request_params(include_stream=True)
+                if callback and cached_result.get("content"):
+                    callback(cached_result.get("content"))
+
+                return self
+        except Exception as e:
+            Logger.note(f"Error retrieving cached streaming result: {str(e)}")
 
         self.state = LLMRequestState.PENDING
 
         try:
+            provider, messages, params = self._prepare_request_params(include_stream=True)
+
             self._streamer.generate(
                 base=self.config.base,
                 provider=provider,
@@ -205,7 +243,6 @@ class SmartLLM(JSONCache):
             self.error = self._streamer.error
 
             if self.is_completed():
-                # Store result in a single location
                 self.result = self._streamer._generation_result
                 self.stream_result = self._streamer._generation_result
                 self.json_cache_save()
@@ -218,7 +255,7 @@ class SmartLLM(JSONCache):
 
         return self
 
-    @Cached()  # Use instance's ttl value from _json_cache_ttl
+    @Cached()
     def _get_llm_response(self) -> Dict[str, Any]:
         provider, messages, params = self._prepare_request_params()
 
@@ -235,14 +272,11 @@ class SmartLLM(JSONCache):
         try:
             Logger.note(f"Executing LLM request in background thread for {self.config.base}/{self.config.model}")
 
-            # Get response (cached if available)
             result = self._get_llm_response()
 
-            # Store result directly, no need for duplicate storage
             self.result = result
             self.state = LLMRequestState.COMPLETED
 
-            # Explicitly save to cache
             self.json_cache_save()
 
             Logger.note(f"LLM request completed successfully")

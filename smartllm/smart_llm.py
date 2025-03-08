@@ -1,4 +1,4 @@
-from typing import Union, Optional, Dict, List, Any
+from typing import Union, Optional, Dict, List, Any, Callable
 from cacherator import Cached, JSONCache
 from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor
@@ -10,13 +10,7 @@ from .llm_provider import LLMProvider
 from .perplexity_provider import PerplexityProvider
 from .anthropic_provider import AnthropicProvider
 from .openai_provider import OpenAIProvider
-
-
-class LLMRequestState(Enum):
-    NOT_STARTED = "not_started"
-    PENDING = "pending"
-    COMPLETED = "completed"
-    FAILED = "failed"
+from .llm_streamer import SmartLLMStreamer, LLMRequestState
 
 
 class SmartLLM(JSONCache):
@@ -27,9 +21,9 @@ class SmartLLM(JSONCache):
     _thread_pool = ThreadPoolExecutor(max_workers=10)
 
     PROVIDERS: Dict[str, LLMProvider] = {
-            "perplexity": PerplexityProvider(),
-            "anthropic" : AnthropicProvider(),
-            "openai"    : OpenAIProvider()
+        "perplexity": PerplexityProvider(),
+        "anthropic": AnthropicProvider(),
+        "openai": OpenAIProvider()
     }
 
     def __init__(
@@ -50,6 +44,7 @@ class SmartLLM(JSONCache):
             return_citations: bool = False,
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
+            stream: bool = False,
     ):
         # Set basic parameters first to construct identifier
         self.base = base
@@ -68,9 +63,15 @@ class SmartLLM(JSONCache):
         self.return_citations = return_citations
         self.json_mode = json_mode
         self.json_schema = json_schema
+        self.stream = stream
+
+        # Initialize streaming handler if streaming is enabled
+        self._streamer = SmartLLMStreamer() if stream else None
 
         # Call JSONCache.__init__ first to restore any cached values
-        JSONCache.__init__(self, data_id=self.identifier, directory="data/llm")
+        # Skip caching for streaming requests
+        if not stream:
+            JSONCache.__init__(self, data_id=self.identifier, directory="data/llm")
 
         # Initialize state variables that shouldn't be cached
         self.state = LLMRequestState.NOT_STARTED
@@ -78,6 +79,9 @@ class SmartLLM(JSONCache):
         self._future = None
         self._client = None
         self._generation_result = None
+
+    def __str__(self):
+        return self.identifier
 
     @property
     def identifier(self) -> str:
@@ -89,7 +93,7 @@ class SmartLLM(JSONCache):
         hash_input = f"{self.base}_{self.model}_{str(self.prompt)}_{self.max_input_tokens}_{self.max_output_tokens}"
         hash_input += f"_{self.temperature}_{self.top_p}_{self.frequency_penalty}_{self.presence_penalty}"
         hash_input += f"_{self.system_prompt}_{self.search_recency_filter}"
-        hash_input += f"_{self.return_citations}_{self.json_mode}"
+        hash_input += f"_{self.return_citations}_{self.json_mode}_{self.stream}"
 
         # For JSON schema, use a content hash instead of string representation
         if self.json_schema:
@@ -105,7 +109,7 @@ class SmartLLM(JSONCache):
         if not self._client and self.base in self.PROVIDERS:
             provider = self.PROVIDERS[self.base]
             self._client = provider.create_client(
-                    api_key=self.api_key
+                api_key=self.api_key
             )
         return self._client
 
@@ -122,7 +126,101 @@ class SmartLLM(JSONCache):
             return self
 
         self.state = LLMRequestState.PENDING
-        self._future = self._thread_pool.submit(self._generate_in_background)
+
+        # Handle streaming requests differently
+        if self.stream:
+            try:
+                self._handle_streaming_request()
+            except Exception as e:
+                self.state = LLMRequestState.FAILED
+                self.error = str(e)
+                Logger.note(f"LLM request failed: {str(e)}")
+                raise
+        else:
+            # Use thread pool for non-streaming requests
+            self._future = self._thread_pool.submit(self._generate_in_background)
+
+        return self
+
+    def _handle_streaming_request(self) -> None:
+        """
+        Internal method to handle streaming requests.
+        Uses the SmartLLMStreamer to process streaming.
+        """
+        if self.base not in self.PROVIDERS:
+            raise ValueError(f"Provider {self.base} not supported for streaming")
+
+        provider = self.PROVIDERS[self.base]
+        messages = self._prepare_messages()
+        params = self._prepare_parameters(messages)
+
+        # Use the streamer to handle the streaming request
+        self._generation_result = self._streamer.generate(
+            base=self.base,
+            provider=provider,
+            client=self.client,
+            model=self.model,
+            messages=messages,
+            params=params
+        )
+
+        # Update state based on streamer state
+        self.state = self._streamer.state
+        self.error = self._streamer.error
+
+    @Logger()
+    def generate_streaming(self, callback: Optional[Callable[[str], None]] = None) -> 'SmartLLM':
+        """
+        Generate a streaming response from the LLM, calling the callback with each chunk.
+
+        Args:
+            callback: Function that will be called with each text chunk. 
+                     If None, uses a default callback that logs the chunks.
+
+        Returns:
+            self for chaining
+        """
+        Logger.note(f"Starting streaming LLM request for {self.base}/{self.model}")
+
+        if self.base not in self.PROVIDERS:
+            raise ValueError(f"Provider {self.base} not supported")
+
+        if self.state == LLMRequestState.PENDING:
+            Logger.note("Request already in progress, not starting a new one")
+            return self
+
+        if self.state == LLMRequestState.COMPLETED:
+            Logger.note("Request already completed, not starting a new one")
+            return self
+
+        self.state = LLMRequestState.PENDING
+
+        try:
+            provider = self.PROVIDERS[self.base]
+            messages = self._prepare_messages()
+            params = self._prepare_parameters(messages)
+
+            # Use the streamer to handle the streaming request
+            self._generation_result = self._streamer.generate(
+                base=self.base,
+                provider=provider,
+                client=self.client,
+                model=self.model,
+                messages=messages,
+                params=params,
+                callback=callback
+            )
+
+            # Update state based on streamer state
+            self.state = self._streamer.state
+            self.error = self._streamer.error
+
+        except Exception as e:
+            self.state = LLMRequestState.FAILED
+            self.error = str(e)
+            Logger.note(f"Streaming LLM request failed: {str(e)}")
+            raise
+
         return self
 
     @Cached()
@@ -136,10 +234,10 @@ class SmartLLM(JSONCache):
 
         provider = self.PROVIDERS[self.base]
         raw_response = provider.generate(
-                client=self.client,
-                model=self.model,
-                messages=messages,
-                params=params
+            client=self.client,
+            model=self.model,
+            messages=messages,
+            params=params
         )
 
         # Create a serializable response using the provider's implementation
@@ -155,30 +253,32 @@ class SmartLLM(JSONCache):
         # Add system_prompt to parameters for Anthropic
         if self.base == "anthropic":
             return provider.prepare_parameters(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=self.max_output_tokens,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    frequency_penalty=self.frequency_penalty,
-                    presence_penalty=self.presence_penalty,
-                    search_recency_filter=self.search_recency_filter,
-                    json_mode=self.json_mode,
-                    json_schema=self.json_schema,
-                    system_prompt=self.system_prompt
+                model=self.model,
+                messages=messages,
+                max_tokens=self.max_output_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                frequency_penalty=self.frequency_penalty,
+                presence_penalty=self.presence_penalty,
+                search_recency_filter=self.search_recency_filter,
+                json_mode=self.json_mode,
+                json_schema=self.json_schema,
+                system_prompt=self.system_prompt,
+                stream=self.stream
             )
         else:
             return provider.prepare_parameters(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=self.max_output_tokens,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    frequency_penalty=self.frequency_penalty,
-                    presence_penalty=self.presence_penalty,
-                    search_recency_filter=self.search_recency_filter,
-                    json_mode=self.json_mode,
-                    json_schema=self.json_schema
+                model=self.model,
+                messages=messages,
+                max_tokens=self.max_output_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                frequency_penalty=self.frequency_penalty,
+                presence_penalty=self.presence_penalty,
+                search_recency_filter=self.search_recency_filter,
+                json_mode=self.json_mode,
+                json_schema=self.json_schema,
+                stream=self.stream
             )
 
     def _generate_in_background(self) -> Dict[str, Any]:
@@ -212,6 +312,10 @@ class SmartLLM(JSONCache):
         if self.state == LLMRequestState.FAILED:
             return False
 
+        # For streaming requests, delegate to the streamer
+        if self.stream:
+            return self._streamer.is_completed()
+
         if self._future is None:
             Logger.note("No future exists, request may not have been started properly")
             return False
@@ -225,130 +329,9 @@ class SmartLLM(JSONCache):
             return False
 
     def is_completed(self) -> bool:
-        return self.state == LLMRequestState.COMPLETED
-
-    def is_pending(self) -> bool:
-        return self.state == LLMRequestState.PENDING
-
-    def is_failed(self) -> bool:
-        return self.state == LLMRequestState.FAILED
-
-    def get_error(self) -> Optional[str]:
-        return self.error if self.is_failed() else None
-
-    @property
-    def content(self) -> Optional[str]:
-        if not self.is_completed():
-            return None
-        return self._generation_result["content"]
-
-    @property
-    def json_content(self) -> Optional[Dict[str, Any]]:
-        """Get the JSON content from the LLM response if available."""
-        if not self.is_completed() or not self.json_mode:
-            return None
-
-        # Directly return the extracted JSON content that was cached
-        return self._generation_result.get("json_content")
-
-    @property
-    def citations(self) -> List[str]:
-        """Legacy property for backward compatibility. Use sources instead."""
-        return self.sources
-
-    @property
-    def sources(self) -> List[str]:
-        """Get citation sources from the LLM response if available."""
-        if not self.is_completed():
-            return []
-        return self._generation_result.get("citations", [])
-
-    @property
-    def usage(self) -> Optional[Dict[str, int]]:
-        if not self.is_completed():
-            return None
-        return self._generation_result.get("usage", {})
-
-    @Logger()
-    @Cached()
-    def count_tokens(self) -> int:
         """
-        Count tokens for the current prompt using the provider's token counting API
-        if available, otherwise fall back to the character-based estimation.
+        Check if the request has completed successfully.
+        For streaming requests, delegates to the streamer.
         """
-        if self.base not in self.PROVIDERS:
-            raise ValueError(f"Provider {self.base} not supported")
-
-        provider = self.PROVIDERS[self.base]
-
-        try:
-            messages = self._prepare_messages()
-            return provider.count_tokens(
-                    client=self.client,
-                    model=self.model,
-                    messages=messages,
-                    system_prompt=self.system_prompt
-            )
-        except NotImplementedError:
-            # Fall back to character-based estimation
-            if isinstance(self.prompt, str):
-                return self.estimate_tokens(self.prompt)
-            else:
-                return sum(self.estimate_tokens(msg) for msg in self.prompt)
-
-    @Cached()
-    def estimate_tokens(self, text: str) -> int:
-        return int(len(text) * self.TOKEN_PER_CHAR)
-
-    @Logger()
-    @Cached()
-    def list_available_models(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """
-        List available models for the current provider.
-        """
-        if self.base not in self.PROVIDERS:
-            raise ValueError(f"Provider {self.base} not supported")
-
-        provider = self.PROVIDERS[self.base]
-
-        try:
-            return provider.list_models(client=self.client, limit=limit)
-        except NotImplementedError:
-            Logger.note(f"Provider {self.base} does not support listing models")
-            return []
-
-    @staticmethod
-    def convert_schema(schema: Any, provider: str = None) -> Dict[str, Any]:
-        """
-        Convert a schema (possibly a Pydantic model) to a provider-specific JSON schema.
-
-        Args:
-            schema: A Pydantic model, dict schema, or other schema object
-            provider: Optional provider name for provider-specific adjustments
-
-        Returns:
-            A JSON schema compatible with the specified provider
-        """
-        # Handle Pydantic models
-        if hasattr(schema, "model_json_schema"):
-            # Pydantic model
-            base_schema = schema.model_json_schema()
-        elif isinstance(schema, dict):
-            # Already a dict schema
-            base_schema = schema
-        else:
-            raise ValueError(f"Unsupported schema type: {type(schema)}")
-
-        # Adjust schema based on provider requirements
-        if provider == "anthropic":
-            # Anthropic doesn't need adjustments currently
-            return base_schema
-        elif provider == "openai":
-            # OpenAI doesn't need adjustments currently
-            return base_schema
-        elif provider == "perplexity":
-            # Perplexity expects a wrapper with "schema"
-            return {"schema": base_schema}
-        else:
-            # No provider specified or unknown provider
-            return base_schema
+        if self.stream and self._streamer:
+            return self._streamer.is_complete

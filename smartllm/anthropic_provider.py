@@ -1,4 +1,4 @@
-from typing import Union, Optional, Dict, List, Any
+from typing import Union, Optional, Dict, List, Any, Callable
 from anthropic import Anthropic
 from .llm_provider import LLMProvider
 from logorator import Logger
@@ -65,7 +65,8 @@ class AnthropicProvider(LLMProvider):
             search_recency_filter: Optional[str],
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            system_prompt: Optional[str] = None
+            system_prompt: Optional[str] = None,
+            stream: bool = False
     ) -> Dict[str, Any]:
         """
         Prepare the parameters for the Anthropic API call.

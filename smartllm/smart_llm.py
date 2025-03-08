@@ -1,4 +1,4 @@
-from typing import Union, Optional, Dict, List, Any, Callable
+from typing import Union, Optional, Dict, List, Any, Callable, Tuple
 from cacherator import JSONCache, Cached
 from concurrent.futures import Future
 from logorator import Logger
@@ -97,6 +97,25 @@ class SmartLLM(JSONCache):
             api_key=self.config.api_key
         )
 
+    def _prepare_request_params(self, include_stream: bool = False) -> Tuple[Any, List[Dict[str, str]], Dict[str, Any]]:
+        provider = self.provider_manager.get_provider(self.config.base)
+        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
+        params = provider.prepare_parameters(
+            model=self.config.model,
+            messages=messages,
+            max_tokens=self.config.max_output_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            frequency_penalty=self.config.frequency_penalty,
+            presence_penalty=self.config.presence_penalty,
+            search_recency_filter=self.config.search_recency_filter,
+            json_mode=self.config.json_mode,
+            json_schema=self.config.json_schema,
+            system_prompt=self.config.system_prompt if self.config.base == "anthropic" else None,
+            stream=include_stream
+        )
+        return provider, messages, params
+
     @Logger()
     def generate(self) -> 'SmartLLM':
         Logger.note(f"Starting LLM request for {self.config.base}/{self.config.model}")
@@ -133,22 +152,7 @@ class SmartLLM(JSONCache):
             self.state = LLMRequestState.COMPLETED
             return
 
-        provider = self.provider_manager.get_provider(self.config.base)
-        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
-        params = provider.prepare_parameters(
-            model=self.config.model,
-            messages=messages,
-            max_tokens=self.config.max_output_tokens,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            frequency_penalty=self.config.frequency_penalty,
-            presence_penalty=self.config.presence_penalty,
-            search_recency_filter=self.config.search_recency_filter,
-            json_mode=self.config.json_mode,
-            json_schema=self.config.json_schema,
-            system_prompt=self.config.system_prompt if self.config.base == "anthropic" else None,
-            stream=True
-        )
+        provider, messages, params = self._prepare_request_params(include_stream=True)
 
         self._streamer.generate(
             base=self.config.base,
@@ -182,22 +186,7 @@ class SmartLLM(JSONCache):
             self.state = LLMRequestState.COMPLETED
             return self
 
-        provider = self.provider_manager.get_provider(self.config.base)
-        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
-        params = provider.prepare_parameters(
-            model=self.config.model,
-            messages=messages,
-            max_tokens=self.config.max_output_tokens,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            frequency_penalty=self.config.frequency_penalty,
-            presence_penalty=self.config.presence_penalty,
-            search_recency_filter=self.config.search_recency_filter,
-            json_mode=self.config.json_mode,
-            json_schema=self.config.json_schema,
-            system_prompt=self.config.system_prompt if self.config.base == "anthropic" else None,
-            stream=True
-        )
+        provider, messages, params = self._prepare_request_params(include_stream=True)
 
         self.state = LLMRequestState.PENDING
 
@@ -229,24 +218,9 @@ class SmartLLM(JSONCache):
 
         return self
 
-    @Cached()  # Cache for 7 days by default
+    @Cached()  # Use instance's ttl value from _json_cache_ttl
     def _get_llm_response(self) -> Dict[str, Any]:
-        """Core method to get an LLM response, wrapped with Cacherator's @Cached decorator"""
-        provider = self.provider_manager.get_provider(self.config.base)
-        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
-        params = provider.prepare_parameters(
-            model=self.config.model,
-            messages=messages,
-            max_tokens=self.config.max_output_tokens,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            frequency_penalty=self.config.frequency_penalty,
-            presence_penalty=self.config.presence_penalty,
-            search_recency_filter=self.config.search_recency_filter,
-            json_mode=self.config.json_mode,
-            json_schema=self.config.json_schema,
-            system_prompt=self.config.system_prompt if self.config.base == "anthropic" else None
-        )
+        provider, messages, params = self._prepare_request_params()
 
         raw_response = provider.generate(
             client=self.client,
@@ -329,7 +303,6 @@ class SmartLLM(JSONCache):
 
     @property
     def content(self) -> str:
-        """Get the text content from the result"""
         if self.config.stream and self._streamer and self._streamer.is_completed():
             return self._streamer.get_content()
         if not hasattr(self, "result") or not self.result:
@@ -338,21 +311,18 @@ class SmartLLM(JSONCache):
 
     @property
     def json_content(self) -> Optional[Dict[str, Any]]:
-        """Get the JSON content from the result, if available"""
         if not hasattr(self, "result") or not self.result:
             return None
         return self.result.get("json_content")
 
     @property
     def sources(self) -> List[str]:
-        """Get citation sources from the result, if available"""
         if not hasattr(self, "result") or not self.result:
             return []
         return self.result.get("citations", [])
 
     @property
     def usage(self) -> Dict[str, int]:
-        """Get token usage statistics"""
         if not hasattr(self, "result") or not self.result:
             return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         return self.result.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})

@@ -12,8 +12,43 @@ class AnthropicProvider(LLMProvider):
         return Anthropic(api_key=api_key)
 
     def _execute_request(self, client: Anthropic, params: Dict[str, Any]) -> Any:
-        """Execute request for Anthropic API"""
         return client.messages.create(**params)
+
+    @Logger()
+    def _execute_streaming_request(
+            self,
+            client: Anthropic,
+            params: Dict[str, Any],
+            callbacks: List[Callable[[str, str], None]] = None
+    ) -> Dict[str, Any]:
+        Logger.note(f"Executing Anthropic streaming request")
+
+        content_buffer = ""
+
+        with client.messages.stream(**params) as stream:
+            for text in stream.text_stream:
+                content_buffer += text
+                if callbacks:
+                    for callback in callbacks:
+                        try:
+                            callback(text, content_buffer)
+                        except Exception as e:
+                            Logger.note(f"Error in callback: {str(e)}")
+
+        Logger.note(f"Streaming completed, total content length: {len(content_buffer)}")
+        return self.create_response_from_stream(content_buffer, params.get("model"))
+
+    @Logger()
+    def generate_stream(
+            self,
+            client: Any,
+            model: str,
+            messages: List[Dict[str, str]],
+            params: Dict[str, Any],
+            callbacks: List[Callable[[str, str], None]] = None,
+    ) -> Any:
+        Logger.note(f"Sending streaming request to Anthropic API with model: {model}")
+        return self._execute_streaming_request(client, params, callbacks)
 
     def prepare_parameters(
             self,
@@ -29,8 +64,6 @@ class AnthropicProvider(LLMProvider):
             json_schema: Optional[Dict[str, Any]] = None,
             system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Prepare parameters for Anthropic API (which has different parameter requirements)"""
-        # Anthropic only supports certain parameters
         params = {
                 "model"      : model,
                 "messages"   : messages,
@@ -39,11 +72,9 @@ class AnthropicProvider(LLMProvider):
                 "top_p"      : top_p,
         }
 
-        # Add system prompt for Anthropic (outside messages)
         if system_prompt:
             params["system"] = system_prompt
 
-        # Add JSON mode configuration if requested
         if json_mode and json_schema:
             json_tool = {
                     "name"        : "json_output",
@@ -56,7 +87,6 @@ class AnthropicProvider(LLMProvider):
         return params
 
     def extract_content(self, raw_response: Any) -> str:
-        """Extract content from Anthropic response"""
         content = ""
         for block in raw_response.content:
             if block.type == "text":
@@ -64,7 +94,6 @@ class AnthropicProvider(LLMProvider):
         return content
 
     def extract_json_content(self, raw_response: Any) -> Optional[Dict[str, Any]]:
-        """Extract JSON content from Anthropic response"""
         try:
             if hasattr(raw_response, 'content'):
                 for block in raw_response.content:
@@ -76,15 +105,12 @@ class AnthropicProvider(LLMProvider):
             return None
 
     def _extract_model_info(self, response: Any) -> str:
-        """Extract model information from Anthropic response"""
         return response.model
 
     def _extract_response_id(self, response: Any) -> str:
-        """Extract response ID from Anthropic response"""
         return response.id
 
     def _extract_usage_info(self, response: Any) -> Dict[str, int]:
-        """Extract token usage information from Anthropic response"""
         return {
                 "prompt_tokens"    : response.usage.input_tokens,
                 "completion_tokens": 0,  # Anthropic doesn't provide completion tokens

@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Callable
 
 from logorator import Logger
 from openai import OpenAI
@@ -23,11 +23,21 @@ class OpenAIProvider(LLMProvider):
         return OpenAI(**client_args)
 
     def _execute_request(self, client: OpenAI, params: Dict[str, Any]) -> Any:
-        """Execute request for OpenAI API"""
         return client.chat.completions.create(**params)
 
+    @Logger()
+    def generate_stream(
+            self,
+            client: Any,
+            model: str,
+            messages: List[Dict[str, str]],
+            params: Dict[str, Any],
+            callbacks: List[Callable[[str, str], None]] = None,
+    ) -> Any:
+        Logger.note(f"OpenAI streaming not yet implemented")
+        raise NotImplementedError("Streaming not yet supported for OpenAI provider")
+
     def _configure_json_mode_with_schema(self, params: Dict[str, Any], json_schema: Dict[str, Any]) -> None:
-        """Configure JSON mode with schema for OpenAI API"""
         params["tools"] = [{
                 "type"    : "function",
                 "function": {
@@ -39,7 +49,6 @@ class OpenAIProvider(LLMProvider):
         params["tool_choice"] = {"type": "function", "function": {"name": "json_output"}}
 
     def extract_content(self, raw_response: Any) -> str:
-        """Extract content from OpenAI response"""
         if not hasattr(raw_response.choices[0], 'message'):
             return ""
 
@@ -49,7 +58,6 @@ class OpenAIProvider(LLMProvider):
         return raw_response.choices[0].message.content
 
     def extract_json_content(self, raw_response: Any) -> Optional[Dict[str, Any]]:
-        """Extract JSON content from OpenAI response"""
         try:
             if hasattr(raw_response.choices[0], 'message') and hasattr(raw_response.choices[0].message, 'tool_calls'):
                 for tool_call in raw_response.choices[0].message.tool_calls:
@@ -65,15 +73,12 @@ class OpenAIProvider(LLMProvider):
             return None
 
     def _extract_model_info(self, response: Any) -> str:
-        """Extract model information from OpenAI response"""
         return response.model
 
     def _extract_response_id(self, response: Any) -> str:
-        """Extract response ID from OpenAI response"""
         return response.id
 
     def _extract_usage_info(self, response: Any) -> Dict[str, int]:
-        """Extract token usage information from OpenAI response"""
         return {
                 "prompt_tokens"    : response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
@@ -87,7 +92,6 @@ class OpenAIProvider(LLMProvider):
             messages: List[Dict[str, str]],
             system_prompt: Optional[str] = None
     ) -> int:
-        """Count tokens for OpenAI API"""
         from tiktoken import encoding_for_model
 
         try:
@@ -117,7 +121,6 @@ class OpenAIProvider(LLMProvider):
             client: Any,
             limit: int = 20
     ) -> List[Dict[str, Any]]:
-        """List available models for OpenAI API"""
         Logger.note("Listing available OpenAI models")
 
         response = client.models.list()

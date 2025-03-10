@@ -1,4 +1,4 @@
-from typing import Union, Optional, Dict, List, Any, Tuple
+from typing import Union, Optional, Dict, List, Any, Tuple, Callable
 from cacherator import JSONCache, Cached
 from logorator import Logger
 
@@ -8,8 +8,11 @@ from .execution.executor import RequestExecutor
 from .execution.state import LLMRequestState
 
 
+def default_streaming_callback(chunk: str, accumulated: str) -> None:
+    Logger.note(f"Received chunk ({len(chunk)} chars): {chunk[:20]}...")
+
+
 class SmartLLM(JSONCache):
-    # Only keep constants that are unique to SmartLLM
     DEFAULT_TTL = 7
 
     def __init__(
@@ -18,9 +21,9 @@ class SmartLLM(JSONCache):
             model: str = "",
             api_key: str = "",
             prompt: Union[str, List[str]] = "",
+            stream: bool = False,
             **kwargs
     ):
-        # Create configuration using core parameters + kwargs for flexibility
         self.config = Configuration(
                 base=base,
                 model=model,
@@ -29,11 +32,9 @@ class SmartLLM(JSONCache):
                 **kwargs
         )
 
-        # Extract cache-specific parameters
         ttl = kwargs.get("ttl", self.DEFAULT_TTL)
         clear_cache = kwargs.get("clear_cache", False)
 
-        # Initialize base JSONCache
         super().__init__(
                 data_id=self.config.identifier,
                 directory="data/llm",
@@ -48,7 +49,10 @@ class SmartLLM(JSONCache):
         self.error = None
         self._future = None
 
-        # If we already have results in cache, mark as completed
+        # Streaming-related fields
+        self.stream_enabled = stream
+        self.streaming_callbacks = [] if stream else None
+
         if hasattr(self, "result") and self.result:
             self._state = LLMRequestState.COMPLETED
 
@@ -95,9 +99,24 @@ class SmartLLM(JSONCache):
             return self
 
         self._state = LLMRequestState.PENDING
-        self._future = self.executor.submit(self._execute_request)
+
+        if self.stream_enabled:
+            self._future = self.executor.submit(self._execute_streaming_request)
+        else:
+            self._future = self.executor.submit(self._execute_request)
 
         return self
+
+    def stream(self, callback: Optional[Callable[[str, str], None]] = None) -> 'SmartLLM':
+        if not self.stream_enabled:
+            raise ValueError("Streaming not enabled for this instance. Initialize with stream=True")
+
+        if callback:
+            self.streaming_callbacks.append(callback)
+        else:
+            self.streaming_callbacks.append(default_streaming_callback)
+
+        return self.generate()
 
     @Cached()
     def _get_llm_response(self) -> Dict[str, Any]:
@@ -111,6 +130,33 @@ class SmartLLM(JSONCache):
         )
 
         return provider.create_response(raw_response, self.config.json_mode)
+
+    @Cached()
+    def _get_streaming_llm_response(self) -> Dict[str, Any]:
+        provider = self.provider_manager.get_provider(self.config.base)
+        messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
+
+        params = provider.prepare_parameters(
+                model=self.config.model,
+                messages=messages,
+                max_tokens=self.config.max_output_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                frequency_penalty=self.config.frequency_penalty,
+                presence_penalty=self.config.presence_penalty,
+                search_recency_filter=self.config.search_recency_filter,
+                json_mode=self.config.json_mode,
+                json_schema=self.config.json_schema,
+                system_prompt=self.config.system_prompt
+        )
+
+        return provider.generate_stream(
+                client=self.client,
+                model=self.config.model,
+                messages=messages,
+                params=params,
+                callbacks=self.streaming_callbacks
+        )
 
     def _execute_request(self) -> Dict[str, Any]:
         try:
@@ -130,6 +176,26 @@ class SmartLLM(JSONCache):
             self._state = LLMRequestState.FAILED
             self.error = str(e)
             Logger.note(f"LLM request failed: {str(e)}")
+            raise
+
+    def _execute_streaming_request(self) -> Dict[str, Any]:
+        try:
+            Logger.note(f"Executing streaming request for {self.config.base}/{self.config.model}")
+
+            result = self._get_streaming_llm_response()
+
+            self.result = result
+            self._state = LLMRequestState.COMPLETED
+
+            self.json_cache_save()
+
+            Logger.note("Streaming request completed successfully")
+            return result
+
+        except Exception as e:
+            self._state = LLMRequestState.FAILED
+            self.error = str(e)
+            Logger.note(f"Streaming request failed: {str(e)}")
             raise
 
     @Logger()

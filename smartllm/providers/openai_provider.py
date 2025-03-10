@@ -22,123 +22,24 @@ class OpenAIProvider(LLMProvider):
 
         return OpenAI(**client_args)
 
-    @Logger()
-    def generate(
-            self,
-            client: OpenAI,
-            model: str,
-            messages: List[Dict[str, str]],
-            params: Dict[str, Any],
-    ) -> Any:
-        Logger.note(f"Sending request to OpenAI API with model: {model}")
-        response = client.chat.completions.create(**params)
-        Logger.note("Received response from OpenAI API")
-        return response
+    def _execute_request(self, client: OpenAI, params: Dict[str, Any]) -> Any:
+        """Execute request for OpenAI API"""
+        return client.chat.completions.create(**params)
 
-    def prepare_messages(
-            self,
-            prompt: Union[str, List[str]],
-            system_prompt: Optional[str] = None
-    ) -> List[Dict[str, str]]:
-        messages = []
-
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-
-        if isinstance(prompt, str):
-            messages.append({"role": "user", "content": prompt})
-        else:
-            for i, msg in enumerate(prompt):
-                role = "user" if i % 2 == 0 else "assistant"
-                messages.append({"role": role, "content": msg})
-
-        return messages
-
-    def prepare_parameters(
-            self,
-            model: str,
-            messages: List[Dict[str, str]],
-            max_tokens: int,
-            temperature: float,
-            top_p: float,
-            frequency_penalty: float,
-            presence_penalty: float,
-            search_recency_filter: Optional[str],
-            json_mode: bool = False,
-            json_schema: Optional[Dict[str, Any]] = None,
-            system_prompt: Optional[str] = None) -> Dict[str, Any]:
-        params = {
-                "model"            : model,
-                "messages"         : messages,
-                "temperature"      : temperature,
-                "top_p"            : top_p,
-                "frequency_penalty": frequency_penalty,
-                "presence_penalty" : presence_penalty,
-        }
-
-        if max_tokens:
-            params["max_tokens"] = max_tokens
-
-        if search_recency_filter and search_recency_filter in ["month", "week", "day", "hour"]:
-            params["search_recency_filter"] = search_recency_filter
-
-        if json_mode:
-            if json_schema:
-                params["tools"] = [{
-                        "type"    : "function",
-                        "function": {
-                                "name"       : "json_output",
-                                "description": "Structured JSON output",
-                                "parameters" : json_schema
-                        }
-                }]
-                params["tool_choice"] = {"type": "function", "function": {"name": "json_output"}}
-            else:
-                params["response_format"] = {"type": "json_object"}
-
-        return params
-
-    def format_response(
-            self,
-            response: Any,
-            return_citations: bool
-    ) -> Dict[str, Any]:
-        result = {
-                "content"     : self.extract_content(response),
-                "model"       : response.model,
-                "id"          : response.id,
-                "usage"       : {
-                        "prompt_tokens"    : response.usage.prompt_tokens,
-                        "completion_tokens": response.usage.completion_tokens,
-                        "total_tokens"     : response.usage.total_tokens
-                },
-                "raw_response": response
-        }
-
-        if return_citations and hasattr(response, 'citations'):
-            result["citations"] = response.citations
-
-        return result
-
-    def format_json_response(
-            self,
-            response: Any
-    ) -> Optional[Dict[str, Any]]:
-        try:
-            if hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'tool_calls'):
-                for tool_call in response.choices[0].message.tool_calls:
-                    if tool_call.function.name == "json_output":
-                        return json.loads(tool_call.function.arguments)
-
-            if hasattr(response.choices[0], 'message') and response.choices[0].message.content:
-                return json.loads(response.choices[0].message.content)
-
-            return None
-        except (json.JSONDecodeError, AttributeError, KeyError) as e:
-            Logger.note(f"Error extracting JSON from OpenAI response: {str(e)}")
-            return None
+    def _configure_json_mode_with_schema(self, params: Dict[str, Any], json_schema: Dict[str, Any]) -> None:
+        """Configure JSON mode with schema for OpenAI API"""
+        params["tools"] = [{
+                "type"    : "function",
+                "function": {
+                        "name"       : "json_output",
+                        "description": "Structured JSON output",
+                        "parameters" : json_schema
+                }
+        }]
+        params["tool_choice"] = {"type": "function", "function": {"name": "json_output"}}
 
     def extract_content(self, raw_response: Any) -> str:
+        """Extract content from OpenAI response"""
         if not hasattr(raw_response.choices[0], 'message'):
             return ""
 
@@ -147,35 +48,37 @@ class OpenAIProvider(LLMProvider):
 
         return raw_response.choices[0].message.content
 
-    def create_serializable_response(
-            self,
-            raw_response: Any,
-            json_mode: bool = False
-    ) -> Dict[str, Any]:
-        content = self.extract_content(raw_response)
+    def extract_json_content(self, raw_response: Any) -> Optional[Dict[str, Any]]:
+        """Extract JSON content from OpenAI response"""
+        try:
+            if hasattr(raw_response.choices[0], 'message') and hasattr(raw_response.choices[0].message, 'tool_calls'):
+                for tool_call in raw_response.choices[0].message.tool_calls:
+                    if tool_call.function.name == "json_output":
+                        return json.loads(tool_call.function.arguments)
 
-        citations = []
-        if hasattr(raw_response, 'citations'):
-            citations = raw_response.citations
+            if hasattr(raw_response.choices[0], 'message') and raw_response.choices[0].message.content:
+                return json.loads(raw_response.choices[0].message.content)
 
-        serializable = {
-                "content"  : content,
-                "model"    : raw_response.model,
-                "id"       : raw_response.id,
-                "usage"    : {
-                        "prompt_tokens"    : raw_response.usage.prompt_tokens,
-                        "completion_tokens": raw_response.usage.completion_tokens,
-                        "total_tokens"     : raw_response.usage.total_tokens
-                },
-                "citations": citations
+            return None
+        except (json.JSONDecodeError, AttributeError, KeyError) as e:
+            Logger.note(f"Error extracting JSON from OpenAI response: {str(e)}")
+            return None
+
+    def _extract_model_info(self, response: Any) -> str:
+        """Extract model information from OpenAI response"""
+        return response.model
+
+    def _extract_response_id(self, response: Any) -> str:
+        """Extract response ID from OpenAI response"""
+        return response.id
+
+    def _extract_usage_info(self, response: Any) -> Dict[str, int]:
+        """Extract token usage information from OpenAI response"""
+        return {
+                "prompt_tokens"    : response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens"     : response.usage.total_tokens
         }
-
-        if json_mode:
-            json_content = self.format_json_response(raw_response)
-            if json_content:
-                serializable["json_content"] = json_content
-
-        return serializable
 
     def count_tokens(
             self,
@@ -184,6 +87,7 @@ class OpenAIProvider(LLMProvider):
             messages: List[Dict[str, str]],
             system_prompt: Optional[str] = None
     ) -> int:
+        """Count tokens for OpenAI API"""
         from tiktoken import encoding_for_model
 
         try:
@@ -213,6 +117,7 @@ class OpenAIProvider(LLMProvider):
             client: Any,
             limit: int = 20
     ) -> List[Dict[str, Any]]:
+        """List available models for OpenAI API"""
         Logger.note("Listing available OpenAI models")
 
         response = client.models.list()

@@ -3,14 +3,12 @@ import os
 
 def main():
     api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable not set")
-        return
+    api_key = os.environ.get("PERPLEXITY_API_KEY")
 
     print("Creating SmartLLM instance (non-streaming)...")
     llm = SmartLLM(
-        base="anthropic",
-        model="claude-3-7-sonnet-20250219",
+        base="perplexity",
+        model="sonar-pro",
         api_key=api_key,
         prompt="What are the three most important considerations when designing a REST API?",
         temperature=0.7,
@@ -27,7 +25,7 @@ def main():
     else:
         print("\nResponse received:\n")
         print(llm.content)
-
+        print(llm.sources)
 
 
 if __name__ == "__main__":

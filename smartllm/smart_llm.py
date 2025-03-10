@@ -9,13 +9,8 @@ from .execution.state import LLMRequestState
 
 
 class SmartLLM(JSONCache):
-    # Default values as class constants
+    # Only keep constants that are unique to SmartLLM
     DEFAULT_TTL = 7
-    DEFAULT_TEMPERATURE = 0.2
-    DEFAULT_TOP_P = 0.9
-    DEFAULT_FREQUENCY_PENALTY = 1.0
-    DEFAULT_PRESENCE_PENALTY = 0.0
-    DEFAULT_OUTPUT_TYPE = "text"
 
     def __init__(
             self,
@@ -71,9 +66,6 @@ class SmartLLM(JSONCache):
         provider = self.provider_manager.get_provider(self.config.base)
         messages = provider.prepare_messages(self.config.prompt, self.config.system_prompt)
 
-        # Only pass system_prompt in parameters for Anthropic
-        use_system_in_params = self.config.base == "anthropic"
-
         params = provider.prepare_parameters(
                 model=self.config.model,
                 messages=messages,
@@ -85,7 +77,7 @@ class SmartLLM(JSONCache):
                 search_recency_filter=self.config.search_recency_filter,
                 json_mode=self.config.json_mode,
                 json_schema=self.config.json_schema,
-                system_prompt=self.config.system_prompt if use_system_in_params else None
+                system_prompt=self.config.system_prompt
         )
 
         return provider, params
@@ -118,7 +110,7 @@ class SmartLLM(JSONCache):
                 params=params
         )
 
-        return provider.create_serializable_response(raw_response, self.config.json_mode)
+        return provider.create_response(raw_response, self.config.json_mode)
 
     def _execute_request(self) -> Dict[str, Any]:
         try:

@@ -55,7 +55,7 @@ class PerplexityProvider(LLMProvider):
             search_recency_filter: Optional[str],
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            stream: bool = False,
+            system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         params = {
             "model": model,
@@ -66,9 +66,6 @@ class PerplexityProvider(LLMProvider):
             "frequency_penalty": frequency_penalty,
             "presence_penalty": presence_penalty,
         }
-
-        if stream:
-            params["stream"] = True
 
         if search_recency_filter and search_recency_filter in ["month", "week", "day", "hour"]:
             params["search_recency_filter"] = search_recency_filter

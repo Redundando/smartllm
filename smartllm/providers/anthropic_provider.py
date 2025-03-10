@@ -52,9 +52,7 @@ class AnthropicProvider(LLMProvider):
             search_recency_filter: Optional[str],
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            system_prompt: Optional[str] = None,
-            stream: bool = False
-    ) -> Dict[str, Any]:
+            system_prompt: Optional[str] = None    ) -> Dict[str, Any]:
         params = {
             "model": model,
             "messages": messages,
@@ -63,8 +61,6 @@ class AnthropicProvider(LLMProvider):
             "top_p": top_p,
         }
 
-        if stream:
-            params["stream"] = True
 
         if system_prompt:
             params["system"] = system_prompt

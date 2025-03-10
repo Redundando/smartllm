@@ -1,8 +1,10 @@
-from typing import Union, Optional, Dict, List, Any
-from openai import OpenAI
-from .base import LLMProvider
-from logorator import Logger
 import json
+from typing import Any, Dict, List, Optional, Union
+
+from logorator import Logger
+from openai import OpenAI
+
+from .base import LLMProvider
 
 
 class OpenAIProvider(LLMProvider):
@@ -64,19 +66,15 @@ class OpenAIProvider(LLMProvider):
             search_recency_filter: Optional[str],
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            stream: bool = False,
-    ) -> Dict[str, Any]:
+            system_prompt: Optional[str] = None) -> Dict[str, Any]:
         params = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "top_p": top_p,
-            "frequency_penalty": frequency_penalty,
-            "presence_penalty": presence_penalty,
+                "model"            : model,
+                "messages"         : messages,
+                "temperature"      : temperature,
+                "top_p"            : top_p,
+                "frequency_penalty": frequency_penalty,
+                "presence_penalty" : presence_penalty,
         }
-
-        if stream:
-            params["stream"] = True
 
         if max_tokens:
             params["max_tokens"] = max_tokens
@@ -87,12 +85,12 @@ class OpenAIProvider(LLMProvider):
         if json_mode:
             if json_schema:
                 params["tools"] = [{
-                    "type": "function",
-                    "function": {
-                        "name": "json_output",
-                        "description": "Structured JSON output",
-                        "parameters": json_schema
-                    }
+                        "type"    : "function",
+                        "function": {
+                                "name"       : "json_output",
+                                "description": "Structured JSON output",
+                                "parameters" : json_schema
+                        }
                 }]
                 params["tool_choice"] = {"type": "function", "function": {"name": "json_output"}}
             else:
@@ -106,15 +104,15 @@ class OpenAIProvider(LLMProvider):
             return_citations: bool
     ) -> Dict[str, Any]:
         result = {
-            "content": self.extract_content(response),
-            "model": response.model,
-            "id": response.id,
-            "usage": {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens
-            },
-            "raw_response": response
+                "content"     : self.extract_content(response),
+                "model"       : response.model,
+                "id"          : response.id,
+                "usage"       : {
+                        "prompt_tokens"    : response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "total_tokens"     : response.usage.total_tokens
+                },
+                "raw_response": response
         }
 
         if return_citations and hasattr(response, 'citations'):
@@ -161,15 +159,15 @@ class OpenAIProvider(LLMProvider):
             citations = raw_response.citations
 
         serializable = {
-            "content": content,
-            "model": raw_response.model,
-            "id": raw_response.id,
-            "usage": {
-                "prompt_tokens": raw_response.usage.prompt_tokens,
-                "completion_tokens": raw_response.usage.completion_tokens,
-                "total_tokens": raw_response.usage.total_tokens
-            },
-            "citations": citations
+                "content"  : content,
+                "model"    : raw_response.model,
+                "id"       : raw_response.id,
+                "usage"    : {
+                        "prompt_tokens"    : raw_response.usage.prompt_tokens,
+                        "completion_tokens": raw_response.usage.completion_tokens,
+                        "total_tokens"     : raw_response.usage.total_tokens
+                },
+                "citations": citations
         }
 
         if json_mode:
@@ -220,12 +218,12 @@ class OpenAIProvider(LLMProvider):
         response = client.models.list()
 
         models = [
-            {
-                "id": model.id,
-                "name": model.id,
-                "created_at": model.created
-            }
-            for model in response.data[:limit]
+                {
+                        "id"        : model.id,
+                        "name"      : model.id,
+                        "created_at": model.created
+                }
+                for model in response.data[:limit]
         ]
 
         Logger.note(f"Found {len(models)} models")

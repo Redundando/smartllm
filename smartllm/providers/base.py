@@ -34,8 +34,7 @@ class LLMProvider:
             search_recency_filter: Optional[str],
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            system_prompt: Optional[str] = None,
-            stream: bool = False,
+            system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         pass
 

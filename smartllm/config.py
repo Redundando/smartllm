@@ -22,7 +22,6 @@ class Configuration:
             return_citations: bool = False,
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            stream: bool = False,
             max_input_tokens_default: int = 10_000,
             max_output_tokens_default: int = 10_000,
     ):
@@ -42,7 +41,6 @@ class Configuration:
         self.return_citations = return_citations
         self.json_mode = json_mode
         self.json_schema = json_schema
-        self.stream = stream
         self._max_input_tokens_default = max_input_tokens_default
         self._max_output_tokens_default = max_output_tokens_default
 
@@ -56,7 +54,7 @@ class Configuration:
         hash_input = f"{self.base}_{self.model}_{str(self.prompt)}_{self.max_input_tokens}_{self.max_output_tokens}"
         hash_input += f"_{self.temperature}_{self.top_p}_{self.frequency_penalty}_{self.presence_penalty}"
         hash_input += f"_{self.system_prompt}_{self.search_recency_filter}"
-        hash_input += f"_{self.return_citations}_{self.json_mode}_{self.stream}"
+        hash_input += f"_{self.return_citations}_{self.json_mode}"
 
         if self.json_schema:
             schema_str = json.dumps(self.json_schema, sort_keys=True)
@@ -81,9 +79,7 @@ class Configuration:
             "presence_penalty": self.presence_penalty,
             "search_recency_filter": self.search_recency_filter,
             "return_citations": self.return_citations,
-            "json_mode": self.json_mode,
-            "stream": self.stream
-        }
+            "json_mode": self.json_mode        }
 
         # Add non-empty optional fields
         if self.system_prompt:

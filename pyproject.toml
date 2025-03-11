@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartllm"
-version = "0.0.3"
+version = "0.0.4"
 description = "A unified interface for interacting with multiple Large Language Model providers"
 readme = "README.md"
 authors = [

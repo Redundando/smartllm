@@ -71,7 +71,8 @@ class LLMProvider:
             search_recency_filter: Optional[str],
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            system_prompt: Optional[str] = None
+            system_prompt: Optional[str] = None,
+            stream: bool = False
     ) -> Dict[str, Any]:
         params = {
                 "model"      : model,
@@ -97,6 +98,9 @@ class LLMProvider:
 
         if system_prompt and not self._supports_system_prompt():
             params["system"] = system_prompt
+
+        if stream:
+            params["stream"] = stream
 
         return params
 
@@ -167,7 +171,6 @@ class LLMProvider:
                 response["json_content"] = json_content
             except Exception:
                 pass
-
         return response
 
     def _extract_model_info(self, response: Any) -> str:

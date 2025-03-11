@@ -9,7 +9,7 @@ from .execution.state import LLMRequestState
 
 
 def default_streaming_callback(chunk: str, accumulated: str) -> None:
-    Logger.note(f"Received chunk ({len(chunk)} chars): {chunk[:20]}...")
+    Logger.note(f"{chunk}")
 
 
 class SmartLLM(JSONCache):
@@ -24,6 +24,7 @@ class SmartLLM(JSONCache):
             stream: bool = False,
             **kwargs
     ):
+        # Pass all kwargs to Configuration - it will use what it needs and ignore the rest
         self.config = Configuration(
                 base=base,
                 model=model,
@@ -32,6 +33,7 @@ class SmartLLM(JSONCache):
                 **kwargs
         )
 
+        # Extract JSONCache parameters
         ttl = kwargs.get("ttl", self.DEFAULT_TTL)
         clear_cache = kwargs.get("clear_cache", False)
 
@@ -87,7 +89,7 @@ class SmartLLM(JSONCache):
         return provider, params
 
     @Logger()
-    def generate(self) -> 'SmartLLM':
+    def execute(self, callback: Optional[Callable[[str, str], None]] = None) -> 'SmartLLM':
         Logger.note(f"Starting LLM request for {self.config.base}/{self.config.model}")
 
         if self._state == LLMRequestState.PENDING:
@@ -98,6 +100,13 @@ class SmartLLM(JSONCache):
             Logger.note("Request already completed")
             return self
 
+        # Add callback if streaming is enabled and callback is provided
+        if self.stream_enabled and callback:
+            self.streaming_callbacks.append(callback)
+        elif self.stream_enabled and not self.streaming_callbacks:
+            # Add default callback if none exists
+            self.streaming_callbacks.append(default_streaming_callback)
+
         self._state = LLMRequestState.PENDING
 
         if self.stream_enabled:
@@ -107,16 +116,6 @@ class SmartLLM(JSONCache):
 
         return self
 
-    def stream(self, callback: Optional[Callable[[str, str], None]] = None) -> 'SmartLLM':
-        if not self.stream_enabled:
-            raise ValueError("Streaming not enabled for this instance. Initialize with stream=True")
-
-        if callback:
-            self.streaming_callbacks.append(callback)
-        else:
-            self.streaming_callbacks.append(default_streaming_callback)
-
-        return self.generate()
 
     @Cached()
     def _get_llm_response(self) -> Dict[str, Any]:
@@ -147,7 +146,8 @@ class SmartLLM(JSONCache):
                 search_recency_filter=self.config.search_recency_filter,
                 json_mode=self.config.json_mode,
                 json_schema=self.config.json_schema,
-                system_prompt=self.config.system_prompt
+                system_prompt=self.config.system_prompt,
+                stream=True
         )
 
         return provider.generate_stream(
@@ -202,7 +202,7 @@ class SmartLLM(JSONCache):
     def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
         if self._state == LLMRequestState.NOT_STARTED:
             Logger.note("Request not started yet, starting now")
-            self.generate()
+            self.execute()
 
         if self._state == LLMRequestState.COMPLETED:
             return True
@@ -246,6 +246,12 @@ class SmartLLM(JSONCache):
     @property
     def json_content(self) -> Optional[Dict[str, Any]]:
         return self._get_result_property("json_content")
+
+    @property
+    def response(self) -> Union[str, Dict[str, Any]]:
+        if self.config.json_mode and self.json_content:
+            return self.json_content
+        return self.content
 
     @property
     def sources(self) -> List[str]:

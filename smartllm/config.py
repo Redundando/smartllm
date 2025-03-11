@@ -30,6 +30,7 @@ class Configuration:
             return_citations: bool = False,
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
+            **kwargs  # Accept and ignore additional kwargs
     ):
         # Core parameters
         self.base = base
@@ -52,6 +53,8 @@ class Configuration:
         self.return_citations = return_citations
         self.json_mode = json_mode
         self.json_schema = json_schema
+
+        # Ignore any additional kwargs (ttl, clear_cache, etc.)
 
     @property
     def identifier(self) -> str:

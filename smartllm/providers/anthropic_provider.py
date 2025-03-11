@@ -1,16 +1,27 @@
 from typing import Union, Optional, Dict, List, Any, Callable
 from anthropic import Anthropic
+from httpx import stream
+
 from .base import LLMProvider
 from logorator import Logger
 
 
 class AnthropicProvider(LLMProvider):
+    def __init__(self):
+        self.system_prompt: Optional[str] = None
+        self.json_mode: bool = False
+
     @Logger()
     def create_client(self, api_key: str, base_url: Optional[str] = None,
                       api_version: Optional[str] = None) -> Anthropic:
         Logger.note("Creating Anthropic API client")
         return Anthropic(api_key=api_key)
 
+    def _supports_system_prompt(self) -> bool:
+        return False
+
+
+    @Logger()
     def _execute_request(self, client: Anthropic, params: Dict[str, Any]) -> Any:
         return client.messages.create(**params)
 
@@ -21,22 +32,26 @@ class AnthropicProvider(LLMProvider):
             params: Dict[str, Any],
             callbacks: List[Callable[[str, str], None]] = None
     ) -> Dict[str, Any]:
-        Logger.note(f"Executing Anthropic streaming request")
-
+        Logger.note(f"Executing Anthropic streaming request \n\n {params}")
         content_buffer = ""
-
         with client.messages.stream(**params) as stream:
-            for text in stream.text_stream:
-                content_buffer += text
+            # This implementation is very ugly, but currently that's the only way to access partial chunks from Anthropic when streaming in JSON mode.
+            stream_data = stream._raw_stream
+            for text in stream_data:
+                chunk = ""
+                if hasattr(text, "delta") and hasattr(text.delta, "partial_json"):
+                    chunk = str(text.delta.partial_json)
+                if hasattr(text, "delta") and hasattr(text.delta, "text"):
+                    chunk = str(text.delta.text)
+                content_buffer += chunk
                 if callbacks:
                     for callback in callbacks:
                         try:
-                            callback(text, content_buffer)
+                            callback(chunk, content_buffer)
                         except Exception as e:
                             Logger.note(f"Error in callback: {str(e)}")
-
         Logger.note(f"Streaming completed, total content length: {len(content_buffer)}")
-        return self.create_response_from_stream(content_buffer, params.get("model"))
+        return self.create_response_from_stream(content_buffer, params.get("model"), json_mode=self.json_mode)
 
     @Logger()
     def generate_stream(
@@ -62,8 +77,11 @@ class AnthropicProvider(LLMProvider):
             search_recency_filter: Optional[str],
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
-            system_prompt: Optional[str] = None
+            system_prompt: Optional[str] = None,
+            stream: bool = False,
     ) -> Dict[str, Any]:
+        self.json_mode = json_mode
+        self.system_prompt = system_prompt
         params = {
                 "model"      : model,
                 "messages"   : messages,
@@ -83,7 +101,6 @@ class AnthropicProvider(LLMProvider):
             }
             params["tools"] = [json_tool]
             params["tool_choice"] = {"type": "tool", "name": "json_output"}
-
         return params
 
     def extract_content(self, raw_response: Any) -> str:

@@ -28,16 +28,16 @@ The primary class for interacting with LLM providers:
 from smartllm import SmartLLM
 
 llm = SmartLLM(
-    base="openai",  # Provider: "openai", "anthropic", or "perplexity"
-    model="gpt-4",  # Model name
-    api_key="your-api-key",
-    prompt="Your prompt here",
-    temperature=0.7
+        base="openai",  # Provider: "openai", "anthropic", or "perplexity"
+        model="gpt-4",  # Model name
+        api_key="your-api-key",
+        prompt="Your prompt here",
+        temperature=0.7
 )
 
 llm.generate()  # Start generation process
 llm.wait_for_completion()  # Wait for the response
-result = llm.content  # Get the generated content
+result = llm._content  # Get the generated content
 ```
 
 ### StreamingLLM
@@ -259,7 +259,7 @@ if llm.is_failed():
     error = llm.get_error()
     print(f"Request failed: {error}")
 else:
-    print(llm.content)
+    print(llm._content)
 ```
 
 ### State Management

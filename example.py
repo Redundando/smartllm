@@ -24,7 +24,7 @@ def main():
         print(f"Error occurred: {llm.get_error()}")
     else:
         print("\nResponse received:\n")
-        print(llm.content)
+        print(llm._content)
         print(llm.sources)
 
 

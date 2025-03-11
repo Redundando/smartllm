@@ -240,18 +240,18 @@ class SmartLLM(JSONCache):
         return self.result.get(property_name, default)
 
     @property
-    def content(self) -> str:
+    def _content(self) -> str:
         return self._get_result_property("content", "")
 
     @property
-    def json_content(self) -> Optional[Dict[str, Any]]:
+    def _json_content(self) -> Optional[Dict[str, Any]]:
         return self._get_result_property("json_content")
 
     @property
     def response(self) -> Union[str, Dict[str, Any]]:
-        if self.config.json_mode and self.json_content:
-            return self.json_content
-        return self.content
+        if self.config.json_mode and self._json_content:
+            return self._json_content
+        return self._content
 
     @property
     def sources(self) -> List[str]:

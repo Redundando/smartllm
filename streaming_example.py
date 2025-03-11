@@ -9,7 +9,7 @@ def print_chunk(chunk: str, accumulated: str) -> None:
 def main():
     # Get API key
     api_key = os.environ.get("ANTHROPIC_API_KEY")
-    api_key = os.environ.get("PERPLEXITY_API_KEY")
+    #api_key = os.environ.get("PERPLEXITY_API_KEY")
 
     # JSON schema for a developer profile
     json_schema = {
@@ -23,15 +23,15 @@ def main():
 
     # Create SmartLLM instance with both streaming and JSON mode
     llm = SmartLLM(
-            base="perplexity",
-            model="sonar-pro",
+            base="anthropic",
+            model="claude-3-7-sonnet-20250219",
             api_key=api_key,
             prompt="Create a short profile for a senior developer",
             system_prompt="You are a joker and always and only make funny jokes.",
             #stream=True,
-            json_mode=True,
-            json_schema=json_schema,
-            #clear_cache=True
+            #json_mode=True,
+            #json_schema=json_schema,
+            clear_cache=True
     )
 
     # Start streaming
@@ -42,7 +42,7 @@ def main():
 
     # Print final result
     print("\nFINAL RESULT:")
-    print(llm.content)
+    print(llm.response)
 
 
 if __name__ == "__main__":

@@ -12,62 +12,62 @@ pip install smartllm
 
 - **Unified API**: Consistent interface for OpenAI, Anthropic, and Perplexity LLMs
 - **Response Caching**: Persistent JSON-based caching of responses to improve performance
-- **Streaming Support**: Real-time streaming of LLM responses with callback functionality
+- **Streaming Support**: Real-time streaming of LLM responses (Anthropic only)
+- **JSON Mode**: Structured JSON responses (OpenAI and Anthropic)
+- **Citations**: Access to source information (Perplexity only)
 - **Asynchronous Execution**: Non-blocking request execution
 - **Configurable Parameters**: Granular control over temperature, tokens, and other model parameters
-- **JSON Mode Support**: Built-in handling for JSON-structured responses
-- **Robust Error Handling**: Comprehensive error management and state tracking
 
-## Core Components
+## Supported Providers
 
-### SmartLLM
+SmartLLM currently supports the following LLM providers:
 
-The primary class for interacting with LLM providers:
+- **OpenAI**
+  - Models: GPT-4, GPT-3.5 series, and other OpenAI models
+  - Features: JSON-structured outputs, token usage information
+  - Example: `base="openai", model="gpt-4"`
 
-```python
-from smartllm import SmartLLM
+- **Anthropic**
+  - Models: Claude models (e.g., claude-3-7-sonnet-20250219)
+  - Features: Streaming support, JSON-structured outputs, system prompts
+  - Example: `base="anthropic", model="claude-3-7-sonnet-20250219"`
 
-llm = SmartLLM(
-        base="openai",  # Provider: "openai", "anthropic", or "perplexity"
-        model="gpt-4",  # Model name
-        api_key="your-api-key",
-        prompt="Your prompt here",
-        temperature=0.7
-)
+- **Perplexity**
+  - Models: sonar-small-online, sonar-medium-online, sonar-pro, etc.
+  - Features: Web search capabilities, citation information
+  - Example: `base="perplexity", model="sonar-pro"`
 
-llm.generate()  # Start generation process
-llm.wait_for_completion()  # Wait for the response
-result = llm._content  # Get the generated content
-```
-
-### StreamingLLM
-
-For real-time streaming of responses:
+## Basic Usage
 
 ```python
 from smartllm import SmartLLM
+import os
 
+# Create SmartLLM instance
 llm = SmartLLM(
-    base="anthropic",
-    model="claude-3-7-sonnet-20250219",
-    api_key="your-api-key",
-    prompt="Your prompt here",
-    stream=True
+    base="openai",
+    model="gpt-4",
+    api_key=os.environ.get("OPENAI_API_KEY"),
+    prompt="Explain quantum computing in simple terms",
+    temperature=0.7
 )
 
-# Stream with custom callback function
-def handle_chunk(chunk, accumulated):
-    print(f"New chunk: {chunk}")
+# Execute the request
+llm.execute()
 
-llm.stream(callback=handle_chunk)
+# Wait for completion
 llm.wait_for_completion()
+
+# Check status and get response
+if llm.is_completed():
+    print(llm.response)
+else:
+    print(f"Error: {llm.get_error()}")
 ```
 
-## API Reference
+## SmartLLM Class Reference
 
-### SmartLLM Class
-
-#### Constructor
+### Constructor
 
 ```python
 SmartLLM(
@@ -75,7 +75,7 @@ SmartLLM(
     model: str = "",                 # Model identifier
     api_key: str = "",               # API key for the provider
     prompt: Union[str, List[str]] = "", # Single prompt or conversation history
-    stream: bool = False,            # Enable streaming support
+    stream: bool = False,            # Enable streaming (Anthropic only)
     max_input_tokens: Optional[int] = None,  # Max input tokens
     max_output_tokens: Optional[int] = None, # Max output tokens
     output_type: str = "text",       # Output type
@@ -84,199 +84,228 @@ SmartLLM(
     frequency_penalty: float = 1.0,  # Frequency penalty
     presence_penalty: float = 0.0,   # Presence penalty
     system_prompt: Optional[str] = None, # System prompt
-    search_recency_filter: Optional[str] = None, # Filter for search providers
-    return_citations: bool = False,  # Include citations in response
-    json_mode: bool = False,         # Enable JSON mode
+    search_recency_filter: Optional[str] = None, # Filter for search (Perplexity)
+    return_citations: bool = False,  # Include citations (Perplexity)
+    json_mode: bool = False,         # Enable JSON mode (OpenAI, Anthropic)
     json_schema: Optional[Dict[str, Any]] = None, # JSON schema
     ttl: int = 7,                    # Cache time-to-live in days
     clear_cache: bool = False        # Clear existing cache
 )
 ```
 
-#### Methods
+### Methods
 
-##### `generate() -> SmartLLM`
+#### `execute(callback: Optional[Callable[[str, str], None]] = None) -> SmartLLM`
 
-Initiates the LLM request. Returns the SmartLLM instance for chaining.
-
-##### `stream(callback: Optional[Callable[[str, str], None]] = None) -> SmartLLM`
-
-Initiates a streaming request. The callback receives each chunk and the accumulated content.
-
-##### `wait_for_completion(timeout: Optional[float] = None) -> bool`
-
-Waits for the request to complete. Returns True if successful, False otherwise.
-
-##### `is_failed() -> bool`
-
-Returns True if the request failed.
-
-##### `is_completed() -> bool`
-
-Returns True if the request completed successfully.
-
-##### `is_pending() -> bool`
-
-Returns True if the request is still in progress.
-
-##### `get_error() -> Optional[str]`
-
-Returns the error message if the request failed.
-
-##### `_get_llm_response() -> Dict[str, Any]` (Cached)
-
-Internal method that handles the actual LLM request. Results are cached based on the configuration parameters.
-
-##### `_get_streaming_llm_response() -> Dict[str, Any]` (Cached)
-
-Internal method that handles streaming LLM requests. Results are cached based on the configuration parameters.
-
-#### Properties
-
-##### `content: str` (Uses cached data)
-
-The generated content from the LLM. Retrieved from cached response.
-
-##### `json_content: Optional[Dict[str, Any]]` (Uses cached data)
-
-The parsed JSON content if json_mode is enabled. Retrieved from cached response.
-
-##### `sources: List[str]` (Uses cached data)
-
-Citations or sources included in the response. Retrieved from cached response.
-
-##### `usage: Dict[str, int]` (Uses cached data)
-
-Token usage statistics for the request. Retrieved from cached response.
-
-### Configuration Options
-
-#### Available Providers
-
-- `"openai"`: OpenAI models (e.g., GPT-4, GPT-3.5)
-- `"anthropic"`: Anthropic models (e.g., Claude-3)
-- `"perplexity"`: Perplexity models
-
-#### JSON Mode
-
-Enable structured JSON responses:
+Initiates the LLM request. For streaming requests, an optional callback function can be provided to process each chunk of the response.
 
 ```python
-llm = SmartLLM(
-    base="openai",
-    model="gpt-4",
-    api_key="your-api-key",
-    prompt="Format the data as JSON",
-    json_mode=True,
-    json_schema={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"},
-            "age": {"type": "integer"}
-        }
-    }
-)
+# Basic execution
+llm.execute()
+
+# With streaming callback (Anthropic only)
+def handle_chunk(chunk: str, accumulated: str) -> None:
+    print(f"New chunk: {chunk}")
+
+llm.execute(callback=handle_chunk)
 ```
 
-#### Conversation History
+#### `wait_for_completion(timeout: Optional[float] = None) -> bool`
 
-Pass a list of messages to create a conversation:
+Waits for the request to complete. Returns `True` if successful, `False` otherwise. An optional timeout parameter can be provided.
 
 ```python
-conversation = [
-    "Can you help me understand quantum computing?",
-    "Quantum computing uses quantum bits or qubits...",
-    "How does that differ from classical computing?"
-]
+# Wait indefinitely
+llm.wait_for_completion()
+
+# Wait with timeout (in seconds)
+success = llm.wait_for_completion(timeout=10.0)
+```
+
+#### `is_failed() -> bool`
+
+Returns `True` if the request failed.
+
+#### `is_completed() -> bool`
+
+Returns `True` if the request completed successfully.
+
+#### `is_pending() -> bool`
+
+Returns `True` if the request is still in progress.
+
+#### `get_error() -> Optional[str]`
+
+Returns the error message if the request failed, or `None` if no error occurred.
+
+### Properties
+
+#### `response: Union[str, Dict[str, Any]]`
+
+Returns the generated content. If JSON mode is enabled and JSON content is available, returns a dictionary; otherwise, returns the text content.
+
+#### `_content: str`
+
+Returns the raw text content of the response.
+
+#### `_json_content: Optional[Dict[str, Any]]`
+
+Returns the parsed JSON content if available (requires `json_mode=True`).
+
+#### `sources: List[str]`
+
+Returns citation sources (available with Perplexity when `return_citations=True`).
+
+#### `usage: Dict[str, int]`
+
+Returns token usage statistics for the request, including prompt tokens, completion tokens, and total tokens.
+
+## Advanced Features
+
+### Streaming Responses (Anthropic Only)
+
+```python
+from smartllm import SmartLLM
+import os
+
+def print_chunk(chunk: str, accumulated: str) -> None:
+    print(f"CHUNK: {chunk}")
 
 llm = SmartLLM(
     base="anthropic",
     model="claude-3-7-sonnet-20250219",
-    api_key="your-api-key",
-    prompt=conversation
+    api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    prompt="Write a short story about a robot learning to paint",
+    stream=True  # Enable streaming
 )
+
+# Execute with callback
+llm.execute(callback=print_chunk)
+llm.wait_for_completion()
 ```
 
-### Provider-Specific Features
-
-#### Anthropic
-
-- Supports system prompts
-- Full streaming support
-
-#### OpenAI
-
-- JSON schema validation
-- Token counting
-
-#### Perplexity
-
-- Web search capabilities via search_recency_filter
-
-### Caching
-
-SmartLLM uses the Cacherator library for persistent JSON-based caching. LLM responses are automatically cached based on the configuration parameters, including the prompt, model, and other settings.
-
-Key caching features:
-
-- Results from both regular and streaming LLM requests are cached
-- Cached results are stored in JSON format in the "data/llm" directory
-- Cache files are named based on a unique identifier derived from the request parameters
-- All properties (`content`, `json_content`, `sources`, `usage`) retrieve data from the cache when available
+### JSON Mode (OpenAI and Anthropic)
 
 ```python
-# Configure cache TTL (time-to-live)
+from smartllm import SmartLLM
+import os
+
+json_schema = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "topics": {"type": "array", "items": {"type": "string"}},
+        "difficulty": {"type": "integer", "minimum": 1, "maximum": 10}
+    },
+    "required": ["title", "topics", "difficulty"]
+}
+
 llm = SmartLLM(
     base="openai",
     model="gpt-4",
-    api_key="your-api-key",
-    prompt="Your prompt",
-    ttl=30  # Cache results for 30 days (default is 7 days)
+    api_key=os.environ.get("OPENAI_API_KEY"),
+    prompt="Generate information about a quantum computing course",
+    json_mode=True,
+    json_schema=json_schema
 )
 
-# Force clear cache
+llm.execute()
+llm.wait_for_completion()
+
+# Access structured data
+course_info = llm.response  # Returns a Python dictionary
+print(f"Course title: {course_info['title']}")
+print(f"Topics: {', '.join(course_info['topics'])}")
+print(f"Difficulty: {course_info['difficulty']}/10")
+```
+
+### Getting Citations (Perplexity Only)
+
+```python
+from smartllm import SmartLLM
+import os
+
+llm = SmartLLM(
+    base="perplexity",
+    model="sonar-pro",
+    api_key=os.environ.get("PERPLEXITY_API_KEY"),
+    prompt="What are the latest advancements in quantum computing?",
+    search_recency_filter="week",  # Filter for recent information
+    return_citations=True  # Enable citations
+)
+
+llm.execute()
+llm.wait_for_completion()
+
+# Print the response
+print(llm.response)
+
+# Print the sources
+print("\nSources:")
+for source in llm.sources:
+    print(f"- {source}")
+```
+
+## Caching Mechanism
+
+SmartLLM uses a persistent JSON-based caching system powered by the Cacherator library. This significantly improves performance by avoiding redundant API calls for identical requests.
+
+### Cache Configuration
+
+By default, responses are cached for 7 days. You can customize the cache behavior:
+
+```python
+# Set custom time-to-live (TTL) in days
 llm = SmartLLM(
     base="openai",
     model="gpt-4",
-    api_key="your-api-key",
-    prompt="Your prompt",
-    clear_cache=True  # Ignore existing cache
+    api_key=os.environ.get("OPENAI_API_KEY"),
+    prompt="Explain quantum computing",
+    ttl=30  # Cache results for 30 days
+)
+
+# Force clear existing cache
+llm = SmartLLM(
+    base="openai",
+    model="gpt-4",
+    api_key=os.environ.get("OPENAI_API_KEY"),
+    prompt="Explain quantum computing",
+    clear_cache=True  # Ignore any existing cached response
 )
 ```
 
-Internal methods decorated with `@Cached()` automatically manage caching of responses, using the cacherator library's persistence mechanism.
+### How Caching Works
 
-### Error Handling
+1. Each request is assigned a unique identifier based on:
+   - Provider (`base`)
+   - Model
+   - Prompt
+   - All relevant parameters (temperature, tokens, etc.)
 
-SmartLLM provides robust error handling:
+2. Responses are stored in JSON format in the `data/llm` directory
+
+3. When making an identical request, the cached response is returned instead of making a new API call
+
+4. Cache entries automatically expire after the specified TTL
+
+5. Cache can be manually cleared by setting `clear_cache=True`
+
+## Error Handling
+
+SmartLLM provides robust error handling through state tracking:
 
 ```python
 llm = SmartLLM(...)
-llm.generate()
+llm.execute()
 llm.wait_for_completion()
 
 if llm.is_failed():
-    error = llm.get_error()
-    print(f"Request failed: {error}")
-else:
-    print(llm._content)
-```
-
-### State Management
-
-Track the state of requests:
-
-```python
-llm = SmartLLM(...)
-llm.generate()
-
-# Check state without blocking
-if llm.is_pending():
-    print("Request is still in progress")
+    print(f"Request failed: {llm.get_error()}")
 elif llm.is_completed():
     print("Request completed successfully")
-elif llm.is_failed():
-    print(f"Request failed: {llm.get_error()}")
+    print(llm.response)
+elif llm.is_pending():
+    print("Request is still in progress")
 ```
 
 ## Dependencies

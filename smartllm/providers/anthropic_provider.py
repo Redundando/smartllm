@@ -1,6 +1,5 @@
 from typing import Union, Optional, Dict, List, Any, Callable
 from anthropic import Anthropic
-from httpx import stream
 
 from .base import LLMProvider
 from logorator import Logger

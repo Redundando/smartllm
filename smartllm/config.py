@@ -70,6 +70,10 @@ class Configuration:
         _hash = sha256(hash_input.encode()).hexdigest()[:10]
         return f"{base_id}_{_hash}"
 
+    @property
+    def readable_identifier(self) -> str:
+        return f"{self.base}  ({self.prompt[:60]}){' (JSON)' if self.json_mode else ''}"
+
     def _create_hash_input(self) -> str:
         """Create a string for hashing that incorporates all relevant parameters"""
         hash_input = f"{self.base}_{self.model}_{str(self.prompt)}_{self.max_input_tokens}_{self.max_output_tokens}"

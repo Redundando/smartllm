@@ -1,4 +1,5 @@
-from typing import Union, Optional, Dict, List, Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Union
+
 from logorator import Logger
 
 
@@ -7,27 +8,14 @@ class LLMProvider:
         raise NotImplementedError("Subclasses must implement create_client")
 
     @Logger()
-    def generate(
-            self,
-            client: Any,
-            model: str,
-            messages: List[Dict[str, str]],
-            params: Dict[str, Any],
-    ) -> Any:
+    def generate(self, client: Any, model: str, messages: List[Dict[str, str]], params: Dict[str, Any], ) -> Any:
         Logger.note(f"Sending request to {self.__class__.__name__} API with model: {model}")
         response = self._execute_request(client, params)
         Logger.note(f"Received response from {self.__class__.__name__} API")
         return response
 
     @Logger()
-    def generate_stream(
-            self,
-            client: Any,
-            model: str,
-            messages: List[Dict[str, str]],
-            params: Dict[str, Any],
-            callbacks: List[Callable[[str, str], None]] = None,
-    ) -> Any:
+    def generate_stream(self, client: Any, model: str, messages: List[Dict[str, str]], params: Dict[str, Any], callbacks: List[Callable[[str, str], None]] = None, ) -> Any:
         Logger.note(f"Sending streaming request to {self.__class__.__name__} API with model: {model}")
         raise NotImplementedError(f"Streaming not supported by {self.__class__.__name__}")
 
@@ -37,11 +25,7 @@ class LLMProvider:
     def _execute_streaming_request(self, client: Any, params: Dict[str, Any], callbacks: List[Callable] = None) -> Any:
         raise NotImplementedError(f"Streaming not supported by {self.__class__.__name__}")
 
-    def prepare_messages(
-            self,
-            prompt: Union[str, List[str]],
-            system_prompt: Optional[str] = None
-    ) -> List[Dict[str, str]]:
+    def prepare_messages(self, prompt: Union[str, List[str]], system_prompt: Optional[str] = None) -> List[Dict[str, str]]:
         messages = []
 
         if system_prompt and self._supports_system_prompt():
@@ -59,27 +43,9 @@ class LLMProvider:
     def _supports_system_prompt(self) -> bool:
         return True
 
-    def prepare_parameters(
-            self,
-            model: str,
-            messages: List[Dict[str, str]],
-            max_tokens: int,
-            temperature: float,
-            top_p: float,
-            frequency_penalty: float,
-            presence_penalty: float,
-            search_recency_filter: Optional[str],
-            json_mode: bool = False,
-            json_schema: Optional[Dict[str, Any]] = None,
-            system_prompt: Optional[str] = None,
-            stream: bool = False
-    ) -> Dict[str, Any]:
-        params = {
-                "model"      : model,
-                "messages"   : messages,
-                "temperature": temperature,
-                "top_p"      : top_p
-        }
+    def prepare_parameters(self, model: str, messages: List[Dict[str, str]], max_tokens: int, temperature: float, top_p: float, frequency_penalty: float, presence_penalty: float, search_recency_filter: Optional[str],
+            json_mode: bool = False, json_schema: Optional[Dict[str, Any]] = None, system_prompt: Optional[str] = None, stream: bool = False) -> Dict[str, Any]:
+        params = {"model": model, "messages": messages, "temperature": temperature, "top_p": top_p}
 
         if max_tokens:
             params["max_tokens"] = max_tokens
@@ -113,24 +79,14 @@ class LLMProvider:
     def extract_json_content(self, raw_response: Any) -> Optional[Dict[str, Any]]:
         return None
 
-    def create_response(
-            self,
-            raw_response: Any,
-            json_mode: bool = False
-    ) -> Dict[str, Any]:
+    def create_response(self, raw_response: Any, json_mode: bool = False) -> Dict[str, Any]:
         content = self.extract_content(raw_response)
 
         model = self._extract_model_info(raw_response)
         response_id = self._extract_response_id(raw_response)
         usage = self._extract_usage_info(raw_response)
 
-        response = {
-                "content"  : content,
-                "model"    : model,
-                "id"       : response_id,
-                "usage"    : usage,
-                "citations": self._extract_citations(raw_response)
-        }
+        response = {"content": content, "model": model, "id": response_id, "usage": usage, "citations": self._extract_citations(raw_response)}
 
         if json_mode:
             json_content = self.extract_json_content(raw_response)
@@ -139,29 +95,14 @@ class LLMProvider:
 
         return response
 
-    def create_response_from_stream(
-            self,
-            content: str,
-            model: str,
-            json_mode: bool = False
-    ) -> Dict[str, Any]:
+    def create_response_from_stream(self, content: str, model: str, json_mode: bool = False) -> Dict[str, Any]:
         response_id = f"stream_{model}_{hash(content)}"
 
         # Create a default usage object - actual token counting would need
         # to be implemented provider-specific
-        usage = {
-                "input_tokens" : 0,
-                "output_tokens": 0,
-                "total_tokens" : 0
-        }
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-        response = {
-                "content"  : content,
-                "model"    : model,
-                "id"       : response_id,
-                "usage"    : usage,
-                "citations": []
-        }
+        response = {"content": content, "model": model, "id": response_id, "usage": usage, "citations": []}
 
         # Handle JSON content if needed
         if json_mode and content:

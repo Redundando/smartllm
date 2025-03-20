@@ -9,7 +9,7 @@ from .async_provider_manager import AsyncProviderManager
 
 
 def default_streaming_callback(chunk: str, accumulated: str) -> None:
-    Logger.note(f"{chunk}")
+    Logger.note(f"{chunk}", mode="short")
 
 
 class AsyncSmartLLM(JSONCache):

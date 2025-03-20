@@ -1,6 +1,6 @@
 from typing import Union, Optional, Dict, List, Any, Callable
 from anthropic import AsyncAnthropic
-
+import json
 from .base import AsyncLLMProvider
 from logorator import Logger
 
@@ -34,22 +34,24 @@ class AsyncAnthropicProvider(AsyncLLMProvider):
             callbacks: List[Callable[[str, str], None]] = None
     ) -> Dict[str, Any]:
         content_buffer = ""
-        with client.messages.stream(**params) as stream:
-            # This implementation is very ugly, but currently that's the only way to access partial chunks from Anthropic when streaming in JSON mode.
-            stream_data = stream._raw_stream
-            for text in stream_data:
-                chunk = ""
-                if hasattr(text, "delta") and hasattr(text.delta, "partial_json"):
-                    chunk = str(text.delta.partial_json)
-                if hasattr(text, "delta") and hasattr(text.delta, "text"):
-                    chunk = str(text.delta.text)
-                content_buffer += chunk
-                if callbacks:
-                    for callback in callbacks:
-                        try:
-                            callback(chunk, content_buffer)
-                        except Exception as e:
-                            Logger.note(f"Error in callback: {str(e)}")
+        stream = await client.messages.create(**params, stream=True)
+        async for event in stream:
+            chunk = ""
+            if hasattr(event, "delta") and hasattr(event.delta, "text"):
+                chunk = event.delta.text or ""
+            elif hasattr(event, "delta") and hasattr(event.delta, "json"):
+                partial_json_str = event.delta.model_dump_json() or "{}"
+                partial_json = json.loads(partial_json_str)
+                chunk = partial_json.get("partial_json") or ""
+            content_buffer += chunk
+
+            if callbacks and chunk:
+                for callback in callbacks:
+                    try:
+                        callback(chunk, content_buffer)
+                    except Exception as e:
+                        Logger.note(f"Error in callback: {str(e)}")
+
         Logger.note(f"Streaming completed, total content length: {len(content_buffer)}")
         return await self.create_response_from_stream(content_buffer, params.get("model"), json_mode=self.json_mode)
 

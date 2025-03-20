@@ -101,8 +101,6 @@ class AsyncLLMProvider:
         if system_prompt and not self._supports_system_prompt():
             params["system"] = system_prompt
 
-        if stream:
-            params["stream"] = stream
 
         return params
 

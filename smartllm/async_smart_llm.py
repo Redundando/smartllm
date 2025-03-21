@@ -1,11 +1,12 @@
+import asyncio
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from cacherator import Cached, JSONCache
+from cacherator import JSONCache
 from logorator import Logger
 
+from .async_provider_manager import AsyncProviderManager
 from .config import Configuration
 from .execution.state import LLMRequestState
-from .async_provider_manager import AsyncProviderManager
 
 
 def default_streaming_callback(chunk: str, accumulated: str) -> None:
@@ -49,6 +50,19 @@ class AsyncSmartLLM(JSONCache):
 
         return provider, params
 
+    async def _attempt_execution(self):
+        try:
+            if self.stream_enabled:
+                await self._execute_streaming_request()
+            else:
+                await self._execute_request()
+
+            self._state = LLMRequestState.COMPLETED
+            self.json_cache_save()
+            return True, "success"
+        except Exception as e:
+            return False, str(e)
+
     @Logger(override_function_name="Fetching LLM Result")
     async def execute(self, callback: Optional[Callable[[str, str], None]] = None) -> 'AsyncSmartLLM':
         if self._state == LLMRequestState.COMPLETED:
@@ -63,19 +77,24 @@ class AsyncSmartLLM(JSONCache):
             self.streaming_callbacks.append(default_streaming_callback)
 
         try:
-            if self.stream_enabled:
-                await self._execute_streaming_request()
-            else:
-                await self._execute_request()
-
-            self._state = LLMRequestState.COMPLETED
-            self.json_cache_save()
-
+            for i in range(self.config.rate_limit_retries):
+                success, exception = await self._attempt_execution()
+                if success:
+                    self.json_cache_save()
+                    return self
+                if "rate_limit_error" in exception or "overloaded_error" in exception:
+                    Logger.note("Rate limit error")
+                    if i < self.config.rate_limit_retries - 1:
+                        Logger.note(f"Retry {i}")
+                        await asyncio.sleep(self.config.rate_limit_sleep_time)
+                else:
+                    self._state = LLMRequestState.FAILED
+                    Logger.note(f"LLM request failed: {exception}")
+                    return self
         except Exception as e:
             self._state = LLMRequestState.FAILED
             self.error = str(e)
             Logger.note(f"LLM request failed: {str(e)}")
-
         return self
 
     async def _get_llm_response(self) -> Dict[str, Any]:

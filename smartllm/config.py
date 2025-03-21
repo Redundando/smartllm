@@ -11,6 +11,8 @@ class Configuration:
     DEFAULT_PRESENCE_PENALTY = 0.0
     DEFAULT_MAX_TOKENS = 10_000
     DEFAULT_OUTPUT_TYPE = "text"
+    DEFAULT_RATE_LIMIT_SLEEP_TIME = 15 # seconds
+    DEFAULT_RATE_LIMIT_RETRIES = 20
 
     def __init__(
             self,
@@ -30,6 +32,8 @@ class Configuration:
             return_citations: bool = False,
             json_mode: bool = False,
             json_schema: Optional[Dict[str, Any]] = None,
+            rate_limit_sleep_time: float = DEFAULT_RATE_LIMIT_SLEEP_TIME,
+            rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
             **kwargs  # Accept and ignore additional kwargs
     ):
         # Core parameters
@@ -53,6 +57,9 @@ class Configuration:
         self.return_citations = return_citations
         self.json_mode = json_mode
         self.json_schema = json_schema
+
+        self.rate_limit_sleep_time = rate_limit_sleep_time
+        self.rate_limit_retries = rate_limit_retries
 
         # Ignore any additional kwargs (ttl, clear_cache, etc.)
 

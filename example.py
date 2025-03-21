@@ -15,7 +15,7 @@ async def main():
 
     # Streaming example with async callback
     print("\nStreaming example:\n")
-    llm = AsyncSmartLLM(base="anthropic", model="claude-3-7-sonnet-20250219", api_key=api_key, prompt="Give me a short, funny story, please", temperature=0.7, max_output_tokens=1000, stream=True, json_mode=True,
+    llm = AsyncSmartLLM(base="anthropic", model="claude-3-7-sonnet-20250219", api_key=api_key, prompt="Give me a funny story, please", temperature=0.7, max_output_tokens=1000, stream=True, json_mode=True,
             json_schema=json_schema)
 
     # Define a synchronous callback function that will be called from async code

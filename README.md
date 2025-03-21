@@ -1,6 +1,6 @@
 # SmartLLM
 
-SmartLLM is a unified Python interface for interacting with multiple Large Language Model providers. It provides a consistent API across different LLM providers, handles caching of responses, and supports both synchronous and streaming interactions.
+SmartLLM is a unified Python interface for interacting with multiple Large Language Model providers. It provides a consistent API across different LLM providers, handles caching of responses, and supports both synchronous and asynchronous interactions.
 
 ## Installation
 
@@ -15,7 +15,7 @@ pip install smartllm
 - **Streaming Support**: Real-time streaming of LLM responses (Anthropic only)
 - **JSON Mode**: Structured JSON responses (OpenAI and Anthropic)
 - **Citations**: Access to source information (Perplexity only)
-- **Asynchronous Execution**: Non-blocking request execution
+- **Asynchronous Execution**: Non-blocking request execution via AsyncSmartLLM
 - **Configurable Parameters**: Granular control over temperature, tokens, and other model parameters
 
 ## Supported Providers
@@ -65,6 +65,119 @@ else:
     print(f"Error: {llm.get_error()}")
 ```
 
+## AsyncSmartLLM - Asynchronous Interface
+
+SmartLLM also provides an asynchronous interface for non-blocking API interactions using AsyncSmartLLM:
+
+```python
+import asyncio
+import os
+from smartllm import AsyncSmartLLM
+
+async def main():
+    # Create AsyncSmartLLM instance
+    llm = AsyncSmartLLM(
+        base="anthropic",
+        model="claude-3-7-sonnet-20250219",
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        prompt="Explain quantum computing in simple terms",
+        temperature=0.7
+    )
+
+    # Execute the request asynchronously
+    await llm.execute()
+
+    # Check status and get response
+    if llm.is_completed():
+        print(llm.response)
+    else:
+        print(f"Error: {llm.get_error()}")
+
+# Run the async function
+asyncio.run(main())
+```
+
+### Async Streaming Support
+
+AsyncSmartLLM also supports streaming responses:
+
+```python
+import asyncio
+import os
+from smartllm import AsyncSmartLLM
+
+# Custom callback for handling streaming chunks
+async def print_chunk(chunk: str, accumulated: str) -> None:
+    print(chunk, end="", flush=True)
+
+async def main():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    
+    # Enable streaming with stream=True
+    llm = AsyncSmartLLM(
+        base="anthropic", 
+        model="claude-3-7-sonnet-20250219", 
+        api_key=api_key,
+        prompt="Tell me a short story about a robot learning to paint",
+        temperature=0.7, 
+        max_output_tokens=1000,
+        stream=True
+    )
+
+    # Execute with callback
+    await llm.execute(callback=print_chunk)
+    
+    if llm.is_failed():
+        print(f"\nError occurred: {llm.get_error()}")
+    else:
+        print("\n\nFinal response:")
+        print(llm.response)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Async JSON Mode
+
+```python
+import asyncio
+import os
+from smartllm import AsyncSmartLLM
+
+async def main():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "topics": {"type": "array", "items": {"type": "string"}},
+            "difficulty": {"type": "integer", "minimum": 1, "maximum": 10}
+        },
+        "required": ["title", "topics", "difficulty"]
+    }
+
+    llm = AsyncSmartLLM(
+        base="anthropic",
+        model="claude-3-7-sonnet-20250219",
+        api_key=api_key,
+        prompt="Generate information about a quantum computing course",
+        json_mode=True,
+        json_schema=json_schema
+    )
+
+    await llm.execute()
+
+    # Access structured data
+    course_info = llm.response  # Returns a Python dictionary
+    print(f"Course title: {course_info['title']}")
+    print(f"Topics: {', '.join(course_info['topics'])}")
+    print(f"Difficulty: {course_info['difficulty']}/10")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
 ## SmartLLM Class Reference
 
 ### Constructor
@@ -93,76 +206,45 @@ SmartLLM(
 )
 ```
 
+### AsyncSmartLLM Class Reference
+
+```python
+AsyncSmartLLM(
+    # Same parameters as SmartLLM above
+)
+```
+
 ### Methods
 
-#### `execute(callback: Optional[Callable[[str, str], None]] = None) -> SmartLLM`
-
-Initiates the LLM request. For streaming requests, an optional callback function can be provided to process each chunk of the response.
-
+#### SmartLLM Methods
 ```python
-# Basic execution
-llm.execute()
-
-# With streaming callback (Anthropic only)
-def handle_chunk(chunk: str, accumulated: str) -> None:
-    print(f"New chunk: {chunk}")
-
-llm.execute(callback=handle_chunk)
+execute(callback: Optional[Callable[[str, str], None]] = None) -> SmartLLM
+wait_for_completion(timeout: Optional[float] = None) -> bool
+is_failed() -> bool
+is_completed() -> bool
+get_error() -> Optional[str]
 ```
 
-#### `wait_for_completion(timeout: Optional[float] = None) -> bool`
-
-Waits for the request to complete. Returns `True` if successful, `False` otherwise. An optional timeout parameter can be provided.
-
+#### AsyncSmartLLM Methods
 ```python
-# Wait indefinitely
-llm.wait_for_completion()
-
-# Wait with timeout (in seconds)
-success = llm.wait_for_completion(timeout=10.0)
+async execute(callback: Optional[Callable[[str, str], None]] = None) -> AsyncSmartLLM
+async generate() -> AsyncSmartLLM
+is_failed() -> bool
+is_completed() -> bool
+get_error() -> Optional[str]
 ```
-
-#### `is_failed() -> bool`
-
-Returns `True` if the request failed.
-
-#### `is_completed() -> bool`
-
-Returns `True` if the request completed successfully.
-
-#### `is_pending() -> bool`
-
-Returns `True` if the request is still in progress.
-
-#### `get_error() -> Optional[str]`
-
-Returns the error message if the request failed, or `None` if no error occurred.
 
 ### Properties
 
-#### `response: Union[str, Dict[str, Any]]`
+```python
+response: Union[str, Dict[str, Any]]  # The response content or JSON
+sources: List[str]  # Citation sources (Perplexity)
+usage: Dict[str, int]  # Token usage statistics
+```
 
-Returns the generated content. If JSON mode is enabled and JSON content is available, returns a dictionary; otherwise, returns the text content.
+## Streaming Responses (Anthropic Only)
 
-#### `_content: str`
-
-Returns the raw text content of the response.
-
-#### `_json_content: Optional[Dict[str, Any]]`
-
-Returns the parsed JSON content if available (requires `json_mode=True`).
-
-#### `sources: List[str]`
-
-Returns citation sources (available with Perplexity when `return_citations=True`).
-
-#### `usage: Dict[str, int]`
-
-Returns token usage statistics for the request, including prompt tokens, completion tokens, and total tokens.
-
-## Advanced Features
-
-### Streaming Responses (Anthropic Only)
+### Synchronous Streaming
 
 ```python
 from smartllm import SmartLLM
@@ -184,7 +266,35 @@ llm.execute(callback=print_chunk)
 llm.wait_for_completion()
 ```
 
-### JSON Mode (OpenAI and Anthropic)
+### Asynchronous Streaming
+
+```python
+import asyncio
+from smartllm import AsyncSmartLLM
+import os
+
+async def print_chunk(chunk: str, accumulated: str) -> None:
+    print(chunk, end="", flush=True)
+
+async def main():
+    llm = AsyncSmartLLM(
+        base="anthropic",
+        model="claude-3-7-sonnet-20250219",
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        prompt="Write a short story about a robot learning to paint",
+        stream=True  # Enable streaming
+    )
+
+    # Execute with callback
+    await llm.execute(callback=print_chunk)
+    
+    print("\n\nFinal response:")
+    print(llm.response)
+
+asyncio.run(main())
+```
+
+## JSON Mode (OpenAI and Anthropic)
 
 ```python
 from smartllm import SmartLLM
@@ -219,7 +329,7 @@ print(f"Topics: {', '.join(course_info['topics'])}")
 print(f"Difficulty: {course_info['difficulty']}/10")
 ```
 
-### Getting Citations (Perplexity Only)
+## Getting Citations (Perplexity Only)
 
 ```python
 from smartllm import SmartLLM
@@ -304,8 +414,19 @@ if llm.is_failed():
 elif llm.is_completed():
     print("Request completed successfully")
     print(llm.response)
-elif llm.is_pending():
-    print("Request is still in progress")
+```
+
+For AsyncSmartLLM:
+
+```python
+llm = AsyncSmartLLM(...)
+await llm.execute()
+
+if llm.is_failed():
+    print(f"Request failed: {llm.get_error()}")
+elif llm.is_completed():
+    print("Request completed successfully")
+    print(llm.response)
 ```
 
 ## Dependencies

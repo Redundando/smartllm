@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartllm"
-version = "0.0.4"
+version = "0.0.5"
 description = "A unified interface for interacting with multiple Large Language Model providers"
 readme = "README.md"
 authors = [
@@ -41,7 +41,7 @@ packages = [
     "smartllm",
     "smartllm.providers",
     "smartllm.execution",
-    "smartllm.cache"
+    "smartllm.async_providers"
 ]
 [tool.setuptools.package-data]
 smartllm = ["py.typed"]

@@ -44,9 +44,18 @@ class AsyncSmartLLM(JSONCache):
         provider = self.provider_manager.get_provider(self.config.base)
         messages = await provider.prepare_messages(self.config.prompt, self.config.system_prompt)
 
-        params = await provider.prepare_parameters(model=self.config.model, messages=messages, max_tokens=self.config.max_output_tokens, temperature=self.config.temperature, top_p=self.config.top_p,
-                frequency_penalty=self.config.frequency_penalty, presence_penalty=self.config.presence_penalty, search_recency_filter=self.config.search_recency_filter, json_mode=self.config.json_mode,
-                json_schema=self.config.json_schema, system_prompt=self.config.system_prompt)
+        params = await provider.prepare_parameters(
+            model=self.config.model,
+            messages=messages,
+            max_tokens=self.config.max_output_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            frequency_penalty=self.config.frequency_penalty,
+            presence_penalty=self.config.presence_penalty,
+            search_recency_filter=self.config.search_recency_filter,
+            json_mode=self.config.json_mode,
+            json_schema=self.config.json_schema,
+            system_prompt=self.config.system_prompt)
 
         return provider, params
 
@@ -108,11 +117,26 @@ class AsyncSmartLLM(JSONCache):
         provider = self.provider_manager.get_provider(self.config.base)
         messages = await provider.prepare_messages(self.config.prompt, self.config.system_prompt)
 
-        params = await provider.prepare_parameters(model=self.config.model, messages=messages, max_tokens=self.config.max_output_tokens, temperature=self.config.temperature, top_p=self.config.top_p,
-                frequency_penalty=self.config.frequency_penalty, presence_penalty=self.config.presence_penalty, search_recency_filter=self.config.search_recency_filter, json_mode=self.config.json_mode,
-                json_schema=self.config.json_schema, system_prompt=self.config.system_prompt, stream=True)
+        params = await provider.prepare_parameters(
+            model=self.config.model,
+            messages=messages,
+            max_tokens=self.config.max_output_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            frequency_penalty=self.config.frequency_penalty,
+            presence_penalty=self.config.presence_penalty,
+            search_recency_filter=self.config.search_recency_filter,
+            json_mode=self.config.json_mode,
+            json_schema=self.config.json_schema,
+            system_prompt=self.config.system_prompt,
+            stream=True)
 
-        return await provider.generate_stream(client=await self.client, model=self.config.model, messages=messages, params=params, callbacks=self.streaming_callbacks)
+        return await provider.generate_stream(
+            client=await self.client,
+            model=self.config.model,
+            messages=messages,
+            params=params,
+            callbacks=self.streaming_callbacks)
 
     async def _execute_request(self) -> Dict[str, Any]:
         result = await self._get_llm_response()

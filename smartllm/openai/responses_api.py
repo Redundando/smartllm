@@ -112,7 +112,7 @@ class ResponsesAPI:
             )
             
             if cache_key:
-                self.cache.set(cache_key, self._serialize_response(result), {})
+                self.cache.set(cache_key, self._serialize_response(result), {"prompt": request.prompt})
                 logger.debug(f"Cached response: {cache_key[:8]}...")
             
             return result

@@ -8,7 +8,7 @@ setup(
     version="0.1.0",
     author="Arved Klöhn",
     author_email="arved.kloehn@gmail.com",
-    description="A unified async Python wrapper for multiple LLM providers",
+    description="A unified async Python wrapper for multiple LLM providers with OpenAI Response API and reasoning support",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Redundando/smartllm",

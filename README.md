@@ -15,6 +15,7 @@ A unified async Python wrapper for multiple LLM providers with a consistent inte
 - **Streaming** - Real-time streaming responses for better UX
 - **Rate Limiting** - Built-in concurrency control per model
 - **Colored Logging** - Beautiful console output for debugging
+- **OpenAI Response API** - Full support for OpenAI's primary API including reasoning models
 
 ## Installation
 
@@ -160,6 +161,68 @@ defaults.DEFAULT_MAX_TOKENS = 4096
 defaults.DEFAULT_MAX_RETRIES = 5
 ```
 
+### OpenAI API Types
+
+SmartLLM supports both OpenAI APIs via the `api_type` parameter:
+
+- `"responses"` (default) - OpenAI's primary [Response API](https://platform.openai.com/docs/api-reference/responses), recommended for all modern models
+- `"chat_completions"` - Legacy [Chat Completions API](https://platform.openai.com/docs/api-reference/chat), supported indefinitely
+
+```python
+# Response API (default)
+response = await client.generate_text(
+    TextRequest(prompt="Hello", api_type="responses")
+)
+
+# Chat Completions API (legacy)
+response = await client.generate_text(
+    TextRequest(prompt="Hello", api_type="chat_completions")
+)
+```
+
+### Reasoning Models
+
+For models that support reasoning (e.g. GPT-5.x), use `reasoning_effort` to control how much the model reasons before responding. Reasoning tokens are returned in `response.metadata`:
+
+```python
+response = await client.generate_text(
+    TextRequest(
+        prompt="Solve: what is the 100th Fibonacci number?",
+        reasoning_effort="high",  # "low", "medium", or "high"
+    )
+)
+
+print(response.text)
+print(f"Reasoning tokens used: {response.metadata.get('reasoning_tokens', 0)}")
+```
+
+Note: reasoning models do not support `temperature`. Passing a value other than `1` will raise a `ValueError`.
+
+### Reasoning with Structured Output
+
+```python
+from pydantic import BaseModel
+from smartllm import LLMClient, TextRequest
+
+class Solution(BaseModel):
+    answer: float
+    unit: str
+    explanation: str
+
+async with LLMClient(provider="openai") as client:
+    response = await client.generate_text(
+        TextRequest(
+            prompt="A train leaves city A at 60mph toward city B (300 miles away). Another leaves B at 90mph. When do they meet?",
+            response_format=Solution,
+            reasoning_effort="medium",
+        )
+    )
+
+    solution = response.structured_data
+    print(f"{solution.answer} {solution.unit}: {solution.explanation}")
+    print(f"Reasoning tokens: {response.metadata.get('reasoning_tokens', 0)}")
+```
+
 ## Advanced Features
 
 ### Caching
@@ -257,6 +320,8 @@ async with BedrockLLMClient(bedrock_config) as client:
 | `response_format` | BaseModel | Pydantic model for structured output | None |
 | `use_cache` | bool | Enable caching | True |
 | `clear_cache` | bool | Clear cache before request | False |
+| `api_type` | str | OpenAI API type (`"responses"` or `"chat_completions"`) | `"responses"` |
+| `reasoning_effort` | str | Reasoning effort (`"low"`, `"medium"`, `"high"`) | None |
 
 ## Error Handling
 
@@ -325,6 +390,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Structured output with Pydantic models
 - Streaming responses
 - Rate limiting and concurrency control
+- OpenAI Response API support (primary interface)
+- Reasoning model support with `reasoning_effort` parameter
 - Comprehensive test suite
 
 ## Support

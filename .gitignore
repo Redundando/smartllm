@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# PyPI
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+
+# Environment
+.env
+.venv
+env/
+venv/
+
+# Cache
+.llm_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -1,0 +1,340 @@
+# SmartLLM
+
+A unified async Python wrapper for multiple LLM providers with a consistent interface.
+
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+## Features
+
+- **Unified Interface** - Single API for multiple LLM providers (OpenAI, AWS Bedrock)
+- **Async/Await** - Built on asyncio for high-performance concurrent requests
+- **Smart Caching** - Automatic response caching to reduce costs and latency
+- **Auto Retry** - Exponential backoff retry logic for transient failures
+- **Structured Output** - Native Pydantic model support for type-safe responses
+- **Streaming** - Real-time streaming responses for better UX
+- **Rate Limiting** - Built-in concurrency control per model
+- **Colored Logging** - Beautiful console output for debugging
+
+## Installation
+
+```bash
+pip install smartllm
+```
+
+### Optional Dependencies
+
+Install only the providers you need:
+
+```bash
+# For OpenAI
+pip install smartllm[openai]
+
+# For AWS Bedrock
+pip install smartllm[bedrock]
+
+# For all providers
+pip install smartllm[all]
+```
+
+## Quick Start
+
+### Basic Usage
+
+```python
+import asyncio
+from smartllm import LLMClient, TextRequest
+
+async def main():
+    # Auto-detects provider from environment variables
+    async with LLMClient(provider="openai") as client:
+        response = await client.generate_text(
+            TextRequest(prompt="What is the capital of France?")
+        )
+        print(response.text)
+
+asyncio.run(main())
+```
+
+### Multi-turn Conversations
+
+```python
+from smartllm import LLMClient, MessageRequest, Message
+
+async with LLMClient(provider="openai") as client:
+    messages = [
+        Message(role="user", content="My name is Alice."),
+        Message(role="assistant", content="Nice to meet you, Alice!"),
+        Message(role="user", content="What's my name?"),
+    ]
+    
+    response = await client.send_message(
+        MessageRequest(messages=messages)
+    )
+    print(response.text)  # "Your name is Alice."
+```
+
+### Streaming Responses
+
+```python
+from smartllm import LLMClient, TextRequest
+
+async with LLMClient(provider="openai") as client:
+    request = TextRequest(
+        prompt="Write a short poem about Python.",
+        stream=True
+    )
+    
+    async for chunk in client.generate_text_stream(request):
+        print(chunk.text, end="", flush=True)
+```
+
+### Structured Output with Pydantic
+
+```python
+from pydantic import BaseModel
+from smartllm import LLMClient, TextRequest
+
+class Person(BaseModel):
+    name: str
+    age: int
+    occupation: str
+
+async with LLMClient(provider="openai") as client:
+    response = await client.generate_text(
+        TextRequest(
+            prompt="Generate a person profile for a software engineer named John, age 30.",
+            response_format=Person
+        )
+    )
+    
+    person = response.structured_data
+    print(f"{person.name} is a {person.age} year old {person.occupation}")
+```
+
+## Configuration
+
+### Environment Variables
+
+**OpenAI:**
+```bash
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_MODEL="gpt-4o-mini"  # Optional
+```
+
+**AWS Bedrock:**
+```bash
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+export AWS_REGION="us-east-1"
+export BEDROCK_MODEL="anthropic.claude-3-sonnet-20240229-v1:0"  # Optional
+```
+
+### Programmatic Configuration
+
+```python
+from smartllm import LLMClient, LLMConfig
+
+config = LLMConfig(
+    provider="openai",
+    api_key="your-api-key",
+    default_model="gpt-4o",
+    temperature=0.7,
+    max_tokens=2048,
+    max_retries=3,
+)
+
+async with LLMClient(config) as client:
+    # Use client...
+    pass
+```
+
+### Customizing Defaults
+
+```python
+from smartllm import defaults
+
+# Modify global defaults
+defaults.DEFAULT_TEMPERATURE = 0.7
+defaults.DEFAULT_MAX_TOKENS = 4096
+defaults.DEFAULT_MAX_RETRIES = 5
+```
+
+## Advanced Features
+
+### Caching
+
+Responses are automatically cached when `temperature=0`:
+
+```python
+# First call - hits API
+response1 = await client.generate_text(
+    TextRequest(prompt="What is 2+2?", temperature=0)
+)
+
+# Second call - uses cache (instant, free)
+response2 = await client.generate_text(
+    TextRequest(prompt="What is 2+2?", temperature=0)
+)
+
+# Clear cache for specific request
+response3 = await client.generate_text(
+    TextRequest(prompt="What is 2+2?", temperature=0, clear_cache=True)
+)
+```
+
+### Concurrent Requests
+
+```python
+import asyncio
+from smartllm import LLMClient, TextRequest
+
+async with LLMClient(provider="openai") as client:
+    prompts = ["Question 1", "Question 2", "Question 3"]
+    
+    tasks = [
+        client.generate_text(TextRequest(prompt=p))
+        for p in prompts
+    ]
+    
+    responses = await asyncio.gather(*tasks)
+```
+
+### Rate Limiting
+
+```python
+# Limit concurrent requests
+client = LLMClient(provider="openai", max_concurrent=5)
+```
+
+### Provider-Specific Clients
+
+For advanced use cases, access provider-specific clients:
+
+```python
+from smartllm.openai import OpenAILLMClient, OpenAIConfig
+from smartllm.bedrock import BedrockLLMClient, BedrockConfig
+
+# OpenAI-specific features
+openai_config = OpenAIConfig(api_key="...", organization="...")
+async with OpenAILLMClient(openai_config) as client:
+    models = await client.list_available_models()
+
+# Bedrock-specific features
+bedrock_config = BedrockConfig(aws_region="us-east-1")
+async with BedrockLLMClient(bedrock_config) as client:
+    models = await client.list_available_model_ids()
+```
+
+## Supported Providers
+
+- **OpenAI** - GPT models via OpenAI API
+- **AWS Bedrock** - Claude, Llama, Mistral, and Titan models
+
+## API Reference
+
+### Core Classes
+
+- **`LLMClient`** - Unified client for all providers
+- **`LLMConfig`** - Unified configuration
+- **`TextRequest`** - Single prompt request
+- **`MessageRequest`** - Multi-turn conversation request
+- **`TextResponse`** - LLM response with metadata
+- **`Message`** - Conversation message
+- **`StreamChunk`** - Streaming response chunk
+
+### Request Parameters
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `prompt` | str | Input text prompt | Required |
+| `model` | str | Model ID to use | Config default |
+| `temperature` | float | Sampling temperature (0-1) | 0 |
+| `max_tokens` | int | Maximum output tokens | 2048 |
+| `top_p` | float | Nucleus sampling | 1.0 |
+| `system_prompt` | str | System context | None |
+| `stream` | bool | Enable streaming | False |
+| `response_format` | BaseModel | Pydantic model for structured output | None |
+| `use_cache` | bool | Enable caching | True |
+| `clear_cache` | bool | Clear cache before request | False |
+
+## Error Handling
+
+```python
+from smartllm import LLMClient, TextRequest
+
+async with LLMClient(provider="openai") as client:
+    try:
+        response = await client.generate_text(
+            TextRequest(prompt="Hello")
+        )
+    except ValueError as e:
+        print(f"Configuration error: {e}")
+    except Exception as e:
+        print(f"API error: {e}")
+```
+
+## Development
+
+### Setup
+
+```bash
+git clone https://github.com/Redundando/smartllm.git
+cd smartllm
+pip install -r requirements-dev.txt
+```
+
+### Running Tests
+
+```bash
+# Unit tests
+pytest tests/unit/ -v
+
+# Integration tests (requires API keys)
+export OPENAI_API_KEY="your-key"
+pytest tests/integration/ -v
+
+# All tests
+pytest tests/ -v
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Changelog
+
+### Version 0.1.0
+- Initial public release
+- Unified interface for multiple providers
+- OpenAI support (GPT models)
+- AWS Bedrock support (Claude, Llama, Mistral, Titan)
+- Async/await architecture
+- Smart caching with temperature=0
+- Auto retry with exponential backoff
+- Structured output with Pydantic models
+- Streaming responses
+- Rate limiting and concurrency control
+- Comprehensive test suite
+
+## Support
+
+- **Issues**: [GitHub Issues](https://github.com/Redundando/smartllm/issues)
+- **Email**: arved.kloehn@gmail.com
+
+## Acknowledgments
+
+Built with love using:
+- [Pydantic](https://pydantic.dev/) for data validation
+- [aioboto3](https://github.com/terrycain/aioboto3) for AWS async support
+- [OpenAI Python SDK](https://github.com/openai/openai-python) for OpenAI integration

@@ -21,6 +21,7 @@ class TextRequest:
         response_format: Pydantic model for structured output (optional)
         use_cache: Enable response caching (default: True)
         clear_cache: Clear cache before request (default: False)
+        api_type: OpenAI API type - "responses" (default) or "chat_completions"
     """
     prompt: str
     model: Optional[str] = None
@@ -33,6 +34,8 @@ class TextRequest:
     response_format: Optional[Type[BaseModel]] = None
     use_cache: bool = True
     clear_cache: bool = False
+    api_type: str = "responses"
+    reasoning_effort: Optional[str] = None  # "low", "medium", "high" - reasoning models only
 
 
 @dataclass
@@ -61,6 +64,7 @@ class MessageRequest:
         response_format: Pydantic model for structured output (optional)
         use_cache: Enable response caching (default: True)
         clear_cache: Clear cache before request (default: False)
+        api_type: OpenAI API type - "responses" (default) or "chat_completions"
     """
     messages: List[Message]
     model: Optional[str] = None
@@ -71,6 +75,7 @@ class MessageRequest:
     response_format: Optional[Type[BaseModel]] = None
     use_cache: bool = True
     clear_cache: bool = False
+    api_type: str = "responses"
 
 
 @dataclass

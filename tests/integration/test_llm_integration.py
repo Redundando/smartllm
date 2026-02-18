@@ -31,9 +31,10 @@ async def test_basic_text_generation(integration_config):
     async with LLMClient(integration_config) as client:
         request = TextRequest(
             prompt="Say 'Hello' and nothing else.",
-            max_tokens=10,
+            max_tokens=50,
             temperature=0,
-            clear_cache=True
+            clear_cache=True,
+            api_type="chat_completions"
         )
         
         response = await client.generate_text(request)
@@ -55,7 +56,7 @@ async def test_conversation_messages(integration_config):
             Message(role="user", content="What's my name?"),
         ]
         
-        request = MessageRequest(messages=messages, temperature=0, clear_cache=True)
+        request = MessageRequest(messages=messages, temperature=0, clear_cache=True, api_type="chat_completions")
         response = await client.send_message(request)
         
         assert "alice" in response.text.lower()
@@ -68,7 +69,8 @@ async def test_streaming_response(integration_config):
         request = TextRequest(
             prompt="Count from 1 to 3.",
             max_tokens=50,
-            stream=True
+            stream=True,
+            api_type="chat_completions"
         )
         
         chunks = []
@@ -94,7 +96,8 @@ async def test_structured_output(integration_config):
             prompt="Return a person named John who is 30 years old. Respond in JSON format.",
             response_format=Person,
             temperature=0,
-            clear_cache=True
+            clear_cache=True,
+            api_type="chat_completions"
         )
         
         response = await client.generate_text(request)
@@ -112,7 +115,8 @@ async def test_caching_works(integration_config):
         request = TextRequest(
             prompt="Say 'cached test' and nothing else.",
             temperature=0,
-            use_cache=True
+            use_cache=True,
+            api_type="chat_completions"
         )
         
         # First call - should hit API
@@ -132,9 +136,10 @@ async def test_concurrent_requests(integration_config):
         requests = [
             TextRequest(
                 prompt=f"Say 'test {i}' and nothing else.",
-                max_tokens=10,
+                max_tokens=50,
                 temperature=1.0,
-                use_cache=False
+                use_cache=False,
+                api_type="chat_completions"
             )
             for i in range(3)
         ]

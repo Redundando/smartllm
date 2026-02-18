@@ -22,10 +22,12 @@ async def test_cache_hit_skips_api_call(llm_config, mock_openai_response):
     
     # Pre-populate cache in the underlying provider client
     cache_key = client._client.cache._generate_key(
+        api_type="responses",
         model="gpt-4o-mini",
         prompt="test",
         max_tokens=100,
-        system_prompt=None,
+        instructions=None,
+        reasoning_effort=None,
         response_format=None
     )
     client._client.cache.set(cache_key, {
@@ -55,10 +57,12 @@ async def test_clear_cache_flag(llm_config):
     
     # Pre-populate cache
     cache_key = client._client.cache._generate_key(
+        api_type="responses",
         model="gpt-4o-mini",
         prompt="test",
         max_tokens=100,
-        system_prompt=None,
+        instructions=None,
+        reasoning_effort=None,
         response_format=None
     )
     client._client.cache.set(cache_key, {"text": "cached"})

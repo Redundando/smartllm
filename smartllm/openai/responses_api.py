@@ -86,7 +86,7 @@ class ResponsesAPI:
         # Structured output
         if request.response_format:
             schema = request.response_format.model_json_schema()
-            schema["additionalProperties"] = False
+            schema = self._clean_schema(schema)
             params["text"] = {
                 "format": {
                     "type": "json_schema",
@@ -120,6 +120,27 @@ class ResponsesAPI:
             elapsed = time.time() - start_time
             logger.error(f"Error after {elapsed:.2f}s - {model}: {str(e)}")
             raise
+    
+    def _clean_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively clean schema for OpenAI compatibility."""
+        schema["additionalProperties"] = False
+        
+        if "properties" in schema:
+            cleaned = {}
+            for key, prop in schema["properties"].items():
+                if "anyOf" in prop:
+                    valid = [s for s in prop["anyOf"] if "type" in s or "$ref" in s]
+                    if not valid:
+                        continue
+                    prop["anyOf"] = valid
+                cleaned[key] = self._clean_schema(prop) if isinstance(prop, dict) else prop
+            schema["properties"] = cleaned
+            schema["required"] = list(cleaned.keys())
+        
+        if "$defs" in schema:
+            schema["$defs"] = {k: self._clean_schema(v) for k, v in schema["$defs"].items()}
+        
+        return schema
     
     def _parse_response(self, response, model: str, response_format: Optional[Type[BaseModel]] = None) -> TextResponse:
         """Parse Response API response"""

@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from ..models import TextRequest, MessageRequest, TextResponse, StreamChunk
 from ..utils import pydantic_to_tool_schema, JSONFileCache
 
-logger = logging.getLogger('aws_llm_wrapper')
+logger = logging.getLogger('smartllm')
 
 
 class ChatCompletionsAPI:
@@ -69,7 +69,6 @@ class ChatCompletionsAPI:
         
         # Structured output
         if request.response_format:
-            params["response_format"] = {"type": "json_object"}
             params["tools"] = [self._build_tool_schema(request.response_format)]
             params["tool_choice"] = {"type": "function", "function": {"name": params["tools"][0]["function"]["name"]}}
         
@@ -170,7 +169,6 @@ class ChatCompletionsAPI:
         }
         
         if request.response_format:
-            params["response_format"] = {"type": "json_object"}
             params["tools"] = [self._build_tool_schema(request.response_format)]
             params["tool_choice"] = {"type": "function", "function": {"name": params["tools"][0]["function"]["name"]}}
         

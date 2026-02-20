@@ -170,6 +170,9 @@ class BedrockLLMClient:
                 return self._deserialize_response(cached["data"], request.response_format)
         
         # Log API call
+        if request.reasoning_effort:
+            logger.warning(f"reasoning_effort='{request.reasoning_effort}' is not supported by Bedrock and will be ignored")
+
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
         logger.info(f"API call to {model} - temp={temperature} - prompt: {prompt_preview}")
         
@@ -515,10 +518,8 @@ class BedrockLLMClient:
     def _extract_text_from_chunk(self, chunk_data: Dict[str, Any], model: str) -> str:
         """Extract text from streaming chunk based on model type"""
         if "claude" in model.lower():
-            if "content_block_start" in chunk_data:
-                return ""
-            if "content_block_delta" in chunk_data:
-                return chunk_data["content_block_delta"]["delta"].get("text", "")
+            if chunk_data.get("type") == "content_block_delta":
+                return chunk_data.get("delta", {}).get("text", "")
         elif "llama" in model.lower():
             return chunk_data.get("generation", "")
         

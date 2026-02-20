@@ -2,9 +2,13 @@
 
 import json
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
+
+
+logger = logging.getLogger('smartllm')
 
 
 class JSONFileCache:
@@ -47,7 +51,8 @@ class JSONFileCache:
         if cache_file.exists():
             try:
                 return json.loads(cache_file.read_text())
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Cache read failed for {cache_key}: {e}")
                 return None
         return None
     

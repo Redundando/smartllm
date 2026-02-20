@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from ..models import TextRequest, MessageRequest, TextResponse, StreamChunk
 from ..utils import JSONFileCache
 
-logger = logging.getLogger('aws_llm_wrapper')
+logger = logging.getLogger('smartllm')
 
 
 class ResponsesAPI:

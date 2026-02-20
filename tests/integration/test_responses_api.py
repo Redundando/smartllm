@@ -6,17 +6,17 @@ from pydantic import BaseModel
 from smartllm import LLMClient, LLMConfig, TextRequest
 
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY"),
-    reason="OPENAI_API_KEY not set"
-)
-
-MODEL = "gpt-5.2"
+pytestmark = [
+    pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set"),
+    pytest.mark.openai,
+]
 
 
 @pytest.fixture
-def client_config():
-    return LLMConfig(provider="openai", default_model=MODEL)
+def client_config(test_model, test_provider):
+    if test_provider != "openai":
+        pytest.skip("Response API tests are OpenAI-only")
+    return LLMConfig(provider="openai", default_model=test_model)
 
 
 @pytest.mark.asyncio
@@ -75,6 +75,7 @@ async def test_structured_output(client_config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.reasoning
 async def test_reasoning_effort(client_config):
     """Test reasoning effort parameter and reasoning tokens in metadata"""
     async with LLMClient(client_config) as client:
@@ -92,6 +93,7 @@ async def test_reasoning_effort(client_config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.reasoning
 async def test_reasoning_rejects_temperature(client_config):
     """Test that temperature raises an error for reasoning models"""
     async with LLMClient(client_config) as client:

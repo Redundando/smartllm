@@ -1,0 +1,25 @@
+default = "gpt-4o-mini"
+
+[[models]]
+id = "gpt-4o-mini"
+provider = "openai"
+reasoning = false
+responses_api = false
+
+[[models]]
+id = "gpt-4o"
+provider = "openai"
+reasoning = false
+responses_api = false
+
+[[models]]
+id = "gpt-5.2"
+provider = "openai"
+reasoning = true
+responses_api = true
+
+[[models]]
+id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+provider = "bedrock"
+reasoning = false
+responses_api = false

@@ -59,7 +59,7 @@ def setup_logging(level=logging.INFO):
     Args:
         level: Logging level (default: INFO)
     """
-    logger = logging.getLogger('aws_llm_wrapper')
+    logger = logging.getLogger('smartllm')
     logger.setLevel(level)
     
     # Remove existing handlers

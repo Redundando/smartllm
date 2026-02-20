@@ -355,12 +355,14 @@ pip install -r requirements-dev.txt
 # Unit tests
 pytest tests/unit/ -v
 
-# Integration tests (requires API keys)
-export OPENAI_API_KEY="your-key"
-pytest tests/integration/ -v
+# Integration tests (select model interactively)
+pytest tests/integration/
 
-# All tests
-pytest tests/ -v
+# Integration tests with a specific model
+pytest tests/integration/ --model gpt-4o
+
+# Integration tests with a reasoning model
+pytest tests/integration/ --model gpt-5.2
 ```
 
 ## Contributing
@@ -378,6 +380,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### Version 0.1.4
+- Fixed logger name from `aws_llm_wrapper` to `smartllm`
+- Removed redundant `response_format=json_object` when using tool-based structured output
+- Cache read failures now log a warning instead of silently returning `None`
+- Added `reasoning_effort` warning when used with Bedrock models
+- Test suite now supports model selection via `--model` CLI option or interactive prompt
+- Integration tests support both OpenAI and AWS Bedrock models
+- Bedrock streaming chunk parsing fixed for Claude models
 
 ### Version 0.1.0
 - Initial public release

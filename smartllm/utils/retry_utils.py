@@ -6,7 +6,7 @@ import logging
 from typing import Callable, TypeVar
 from functools import wraps
 
-logger = logging.getLogger('aws_llm_wrapper')
+logger = logging.getLogger('smartllm')
 
 T = TypeVar('T')
 

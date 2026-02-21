@@ -12,7 +12,7 @@ async def main():
         response = await client.generate_text(
             TextRequest(
                 prompt="What is the capital of France?",
-                model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                model="us.anthropic.claude-sonnet-4-6",
             )
         )
         print(response.text)

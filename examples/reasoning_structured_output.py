@@ -18,7 +18,7 @@ class MathSolution(BaseModel):
 
 
 async def main():
-    async with LLMClient(provider="openai") as client:
+    async with LLMClient(provider="openai",dynamo_table_name="smartllm-cache") as client:
         response = await client.generate_text(
             TextRequest(
                 prompt="A train leaves city A at 60mph. Another leaves city B (300 miles away) at 90mph traveling toward each other. When and where do they meet?",
@@ -26,7 +26,7 @@ async def main():
                 reasoning_effort="high",
                 response_format=MathSolution,
                 max_tokens=500,
-                clear_cache=True,
+                #clear_cache=True,
             )
         )
 

@@ -1,31 +1,34 @@
 """Main OpenAI LLM client wrapper"""
 
 import asyncio
-import logging
 from typing import Optional, AsyncIterator
+from logorator import Logger
 from .config import OpenAIConfig
 from .responses_api import ResponsesAPI
 from .chat_completions_api import ChatCompletionsAPI
 from ..models import TextRequest, MessageRequest, TextResponse, StreamChunk
-from ..utils import JSONFileCache, setup_logging, retry_on_error
-
-logger = setup_logging()
+from ..utils import TwoLevelCache, retry_on_error
 
 
 class OpenAILLMClient:
     """Async client for text generation with OpenAI LLMs"""
 
-    def __init__(self, config: Optional[OpenAIConfig] = None, max_concurrent: Optional[int] = None):
+    def __init__(self, config: Optional[OpenAIConfig] = None, max_concurrent: Optional[int] = None, dynamo_table_name: Optional[str] = None, cache_ttl_days: Optional[float] = None):
         """Initialize the OpenAI client
         
         Args:
             config: OpenAIConfig instance. If None, creates default config.
             max_concurrent: Max concurrent requests. Overrides config.max_concurrent if provided.
+            dynamo_table_name: DynamoDB table name for shared cache. If None, only local cache is used.
+            cache_ttl_days: TTL for DynamoDB cache entries in days. Defaults to 365.
         """
         self.config = config or OpenAIConfig()
         self.config.validate()
         self.client = None
-        self.cache = JSONFileCache()
+        cache_kwargs = {"dynamo_table_name": dynamo_table_name}
+        if cache_ttl_days is not None:
+            cache_kwargs["ttl_days"] = cache_ttl_days
+        self.cache = TwoLevelCache(**cache_kwargs)
         self._semaphore = None
         self._max_concurrent = max_concurrent if max_concurrent is not None else self.config.max_concurrent
         
@@ -48,12 +51,9 @@ class OpenAILLMClient:
             # Initialize API handlers
             self.responses_api = ResponsesAPI(self.client, self.config, self.cache, self._semaphore)
             self.chat_completions_api = ChatCompletionsAPI(self.client, self.config, self.cache, self._semaphore)
-            
-            logger.debug(f"OpenAI client initialized")
         except ImportError:
             raise ImportError("openai is required. Install with: pip install openai")
-        except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}")
+        except Exception:
             raise
 
     async def close(self):
@@ -68,8 +68,7 @@ class OpenAILLMClient:
         try:
             models = await self.client.models.list()
             return [model.id for model in models.data]
-        except Exception as e:
-            logger.error(f"Error listing models: {e}")
+        except Exception:
             return []
 
     async def __aenter__(self):

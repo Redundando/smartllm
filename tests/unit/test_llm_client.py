@@ -46,7 +46,12 @@ async def test_cache_hit_skips_api_call(openai_config, mock_openai_response):
     })
 
     with patch.object(client._client, '_invoke_with_retry', new_callable=AsyncMock) as mock_invoke:
-        response = await client.generate_text(TextRequest(prompt="test", temperature=0))
+        with patch.object(client._client, '_init_client', new_callable=AsyncMock):
+            from smartllm.openai.responses_api import ResponsesAPI
+            from smartllm.openai.config import OpenAIConfig
+            client._client.responses_api = ResponsesAPI(MagicMock(), client._client.config, client._client.cache)
+            client._client.client = MagicMock()  # mark as initialized
+            response = await client.generate_text(TextRequest(prompt="test", temperature=0))
 
         mock_invoke.assert_not_called()
         assert response.text == "cached response"
@@ -67,14 +72,17 @@ async def test_clear_cache_flag(openai_config):
         response_format=None
     )
     client._client.cache.set(cache_key, {"text": "cached"})
-
     assert client._client.cache.get(cache_key) is not None
 
     with patch.object(client._client, '_invoke_with_retry', new_callable=AsyncMock):
-        try:
-            await client.generate_text(TextRequest(prompt="test", temperature=0, clear_cache=True))
-        except:
-            pass
+        with patch.object(client._client, '_init_client', new_callable=AsyncMock):
+            from smartllm.openai.responses_api import ResponsesAPI
+            client._client.responses_api = ResponsesAPI(MagicMock(), client._client.config, client._client.cache)
+            client._client.client = MagicMock()
+            try:
+                await client.generate_text(TextRequest(prompt="test", temperature=0, clear_cache=True))
+            except:
+                pass
 
     assert client._client.cache.get(cache_key) is None
 
@@ -110,9 +118,10 @@ async def test_get_available_providers():
 async def test_list_models_for_provider():
     """Test listing models for a specific provider"""
     with patch('smartllm.openai.OpenAILLMClient.list_available_models', new_callable=AsyncMock) as mock_list:
-        mock_list.return_value = ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
+        with patch('smartllm.openai.OpenAILLMClient._init_client', new_callable=AsyncMock):
+            mock_list.return_value = ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
 
-        models = await LLMClient.list_models_for_provider("openai", api_key="test-key")
+            models = await LLMClient.list_models_for_provider("openai", api_key="test-key")
 
-        assert len(models) > 0
-        assert any("gpt" in m for m in models)
+            assert len(models) > 0
+            assert any("gpt" in m for m in models)

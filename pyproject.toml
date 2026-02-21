@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartllm"
-version = "0.1.4"
+version = "0.1.5"
 description = "A unified async Python wrapper for multiple LLM providers with OpenAI Response API and reasoning support"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -29,6 +29,8 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0.0",
+    "logorator>=2.0.0",
+    "dynamorator>=0.1.0",
 ]
 
 [project.optional-dependencies]

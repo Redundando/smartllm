@@ -1,7 +1,2 @@
-# Development dependencies
--r requirements.txt  # Include production dependencies
-
-# Testing
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-pytest-mock>=3.10.0
+# Install dev dependencies via:
+#   pip install smartllm[dev]

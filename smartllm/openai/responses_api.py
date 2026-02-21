@@ -1,14 +1,11 @@
 """OpenAI Response API implementation"""
 
 import json
-import logging
-import time
 from typing import Optional, Type, Dict, Any
 from pydantic import BaseModel
+from logorator import Logger
 from ..models import TextRequest, MessageRequest, TextResponse, StreamChunk
 from ..utils import JSONFileCache
-
-logger = logging.getLogger('smartllm')
 
 
 class ResponsesAPI:
@@ -20,6 +17,10 @@ class ResponsesAPI:
         self.cache = cache
         self.semaphore = semaphore
     
+    def __str__(self):
+        return "OpenAI ResponsesAPI"
+
+    @Logger(exclude_args=["invoke_with_retry"])
     async def generate_text(self, request: TextRequest, invoke_with_retry) -> TextResponse:
         """Generate text using Response API"""
         model = request.model or self.config.default_model
@@ -49,18 +50,15 @@ class ResponsesAPI:
         
         if request.clear_cache and cache_key:
             self.cache.clear(cache_key)
-            logger.info(f"Cleared cache entry: {cache_key[:8]}...")
         
         if request.use_cache and cache_key:
             cached = self.cache.get(cache_key)
             if cached:
-                logger.info(f"Cache hit [{cache_key[:8]}] - {model} - prompt: {request.prompt[:50]}...")
+                Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 return self._deserialize_response(cached["data"], request.response_format)
         
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
-        logger.info(f"API call to {model} (Response API) - reasoning={request.reasoning_effort or 'off'} - prompt: {prompt_preview}")
-        
-        start_time = time.time()
+        Logger.note(f"{model} | reasoning={request.reasoning_effort or 'off'} | {prompt_preview}")
         
         # Build params
         params = {
@@ -104,21 +102,13 @@ class ResponsesAPI:
                 response = await invoke_with_retry(self.client.responses.create, **params)
             
             result = self._parse_response(response, model, request.response_format)
-            
-            elapsed = time.time() - start_time
-            logger.info(
-                f"Response received - {result.input_tokens} in / {result.output_tokens} out tokens - "
-                f"{elapsed:.2f}s - {result.text[:50]}..."
-            )
+            Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
             if cache_key:
                 self.cache.set(cache_key, self._serialize_response(result), {"prompt": request.prompt})
-                logger.debug(f"Cached response: {cache_key[:8]}...")
             
             return result
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"Error after {elapsed:.2f}s - {model}: {str(e)}")
+        except Exception:
             raise
     
     def _clean_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,13 +141,11 @@ class ResponsesAPI:
             try:
                 data = json.loads(text)
                 structured_data = response_format(**data)
-            except Exception as e:
-                logger.warning(f"Failed to parse structured output: {e}")
+            except Exception:
+                pass
         
         input_tokens = response.usage.input_tokens if response.usage else 0
         output_tokens = response.usage.output_tokens if response.usage else 0
-        
-        logger.debug(f"Raw usage: {response.usage}")
         
         # Capture reasoning tokens in metadata if present
         metadata = {}

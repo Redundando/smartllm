@@ -37,6 +37,9 @@ class TextRequest:
     api_type: str = "responses"
     reasoning_effort: Optional[str] = None  # "low", "medium", "high" - reasoning models only
 
+    def __str__(self):
+        return self.prompt[:150] + "..." if len(self.prompt) > 150 else self.prompt
+
 
 @dataclass
 class Message:
@@ -76,6 +79,10 @@ class MessageRequest:
     use_cache: bool = True
     clear_cache: bool = False
     api_type: str = "responses"
+
+    def __str__(self):
+        last = self.messages[-1].content if self.messages else ""
+        return f"{len(self.messages)} messages | {last[:50]}"
 
 
 @dataclass

@@ -9,12 +9,12 @@ A unified async Python wrapper for multiple LLM providers with a consistent inte
 
 - **Unified Interface** - Single API for multiple LLM providers (OpenAI, AWS Bedrock)
 - **Async/Await** - Built on asyncio for high-performance concurrent requests
-- **Smart Caching** - Automatic response caching to reduce costs and latency
+- **Smart Caching** - Two-level cache (local + DynamoDB) to reduce costs and latency
 - **Auto Retry** - Exponential backoff retry logic for transient failures
 - **Structured Output** - Native Pydantic model support for type-safe responses
 - **Streaming** - Real-time streaming responses for better UX
 - **Rate Limiting** - Built-in concurrency control per model
-- **Colored Logging** - Beautiful console output for debugging
+- **Decorator Logging** - Automatic function logging via [Logorator](https://pypi.org/project/logorator/)
 - **OpenAI Response API** - Full support for OpenAI's primary API including reasoning models
 
 ## Installation
@@ -37,6 +37,17 @@ pip install smartllm[bedrock]
 # For all providers
 pip install smartllm[all]
 ```
+
+### DynamoDB Caching (optional)
+
+To enable shared two-level caching across machines:
+
+```python
+async with LLMClient(provider="openai", dynamo_table_name="my-llm-cache") as client:
+    ...
+```
+
+Requires AWS credentials with DynamoDB access. The table is auto-created if it doesn't exist. Local file cache is always used as the first layer.
 
 ## Quick Start
 
@@ -346,7 +357,7 @@ async with LLMClient(provider="openai") as client:
 ```bash
 git clone https://github.com/Redundando/smartllm.git
 cd smartllm
-pip install -r requirements-dev.txt
+pip install -e .[all,dev]
 ```
 
 ### Running Tests
@@ -381,6 +392,15 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### Version 0.1.5
+- Replaced custom logging with [Logorator](https://pypi.org/project/logorator/) decorator-based logging
+- Added two-level cache: local JSON files + optional DynamoDB via [Dynamorator](https://pypi.org/project/dynamorator/)
+- DynamoDB cache configurable via `dynamo_table_name` and `cache_ttl_days` (default: 365 days)
+- Cache write-back: DynamoDB hits are written to local cache automatically
+- Prompt stored in cache metadata
+- Recursive Pydantic schema cleaning for OpenAI structured output compatibility
+- `logorator` and `dynamorator` added as core dependencies in `pyproject.toml`
+
 ### Version 0.1.4
 - Fixed logger name from `aws_llm_wrapper` to `smartllm`
 - Removed redundant `response_format=json_object` when using tool-based structured output
@@ -412,7 +432,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-Built with love using:
+Built with:
 - [Pydantic](https://pydantic.dev/) for data validation
+- [Logorator](https://pypi.org/project/logorator/) for decorator-based logging
+- [Dynamorator](https://pypi.org/project/dynamorator/) for DynamoDB caching
 - [aioboto3](https://github.com/terrycain/aioboto3) for AWS async support
 - [OpenAI Python SDK](https://github.com/openai/openai-python) for OpenAI integration

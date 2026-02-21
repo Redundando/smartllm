@@ -3,8 +3,29 @@
 import pytest
 import tempfile
 import shutil
-from pathlib import Path
-from smartllm.utils import JSONFileCache
+from unittest.mock import MagicMock
+from smartllm.utils import JSONFileCache, TwoLevelCache
+
+
+@pytest.fixture
+def temp_cache():
+    """Temporary cache directory"""
+    temp_dir = tempfile.mkdtemp()
+    cache = JSONFileCache(cache_dir=temp_dir)
+    yield cache
+    shutil.rmtree(temp_dir)
+
+
+@pytest.fixture
+def two_level_cache():
+    """TwoLevelCache with a mocked DynamoDB store"""
+    temp_dir = tempfile.mkdtemp()
+    cache = TwoLevelCache(cache_dir=temp_dir)
+    mock_dynamo = MagicMock()
+    mock_dynamo.get.return_value = None
+    cache._dynamo = mock_dynamo
+    yield cache
+    shutil.rmtree(temp_dir)
 
 
 @pytest.fixture
@@ -104,3 +125,32 @@ async def test_cache_stores_prompt(temp_cache):
 
     assert cached is not None
     assert cached["metadata"]["prompt"] == prompt
+
+
+def test_two_level_cache_writes_to_both(two_level_cache):
+    """Test that set() writes to both local and DynamoDB"""
+    two_level_cache.set("key1", {"text": "Paris"}, {"prompt": "capital?"})
+
+    assert two_level_cache.local.get("key1") is not None
+    two_level_cache._dynamo.put.assert_called_once()
+
+
+def test_two_level_cache_local_hit_skips_dynamo(two_level_cache):
+    """Test that a local cache hit never calls DynamoDB"""
+    two_level_cache.local.set("key1", {"text": "Paris"})
+
+    result = two_level_cache.get("key1")
+
+    assert result is not None
+    two_level_cache._dynamo.get.assert_not_called()
+
+
+def test_two_level_cache_dynamo_hit_writes_back_locally(two_level_cache):
+    """Test that a DynamoDB hit is written back to local cache"""
+    db_data = {"data": {"text": "Paris"}, "metadata": {"prompt": "capital?"}}
+    two_level_cache._dynamo.get.return_value = db_data
+
+    result = two_level_cache.get("key1")
+
+    assert result is not None
+    assert two_level_cache.local.get("key1") is not None  # written back

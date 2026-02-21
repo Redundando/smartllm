@@ -50,6 +50,9 @@ class LLMConfig:
         aws_session_token: Optional[str] = None,
         aws_region: Optional[str] = None,
         top_k: Optional[int] = None,
+        # Cache specific
+        dynamo_table_name: Optional[str] = None,
+        cache_ttl_days: Optional[float] = None,
     ):
         # Auto-detect provider if not specified
         if provider is None:
@@ -77,6 +80,10 @@ class LLMConfig:
         self.aws_session_token = aws_session_token
         self.aws_region = aws_region
         self.top_k = top_k
+
+        # Cache specific
+        self.dynamo_table_name = dynamo_table_name
+        self.cache_ttl_days = cache_ttl_days
     
     def _detect_provider(self) -> str:
         """Auto-detect provider from environment variables

@@ -1,11 +1,10 @@
 """Main Bedrock LLM client wrapper"""
 
 import json
-import logging
-import time
 import asyncio
 from typing import Optional, AsyncIterator, List, Dict, Any, Type
 from pydantic import BaseModel
+from logorator import Logger
 from .config import BedrockConfig
 from ..models import (
     TextRequest, 
@@ -13,9 +12,7 @@ from ..models import (
     TextResponse, 
     StreamChunk,
 )
-from ..utils import pydantic_to_tool_schema, JSONFileCache, setup_logging, retry_on_error
-
-logger = setup_logging()
+from ..utils import pydantic_to_tool_schema, TwoLevelCache, retry_on_error
 
 # Default Bedrock model quotas for concurrency limiting
 DEFAULT_MODEL_QUOTAS = {
@@ -33,18 +30,23 @@ DEFAULT_MODEL_QUOTAS = {
 class BedrockLLMClient:
     """Async client for text generation with AWS Bedrock LLMs"""
 
-    def __init__(self, config: Optional[BedrockConfig] = None, max_concurrent: Optional[int] = None):
+    def __init__(self, config: Optional[BedrockConfig] = None, max_concurrent: Optional[int] = None, dynamo_table_name: Optional[str] = None, cache_ttl_days: Optional[float] = None):
         """Initialize the Bedrock client
         
         Args:
             config: BedrockConfig instance. If None, creates default config.
             max_concurrent: Max concurrent requests. Overrides config.max_concurrent if provided.
+            dynamo_table_name: DynamoDB table name for shared cache. If None, only local cache is used.
+            cache_ttl_days: TTL for DynamoDB cache entries in days. Defaults to 365.
         """
         self.config = config or BedrockConfig()
         self.config.validate()
         self.client = None
         self.models_client = None
-        self.cache = JSONFileCache()
+        cache_kwargs = {"dynamo_table_name": dynamo_table_name}
+        if cache_ttl_days is not None:
+            cache_kwargs["ttl_days"] = cache_ttl_days
+        self.cache = TwoLevelCache(**cache_kwargs)
         self._semaphores: Dict[str, asyncio.Semaphore] = {}
         self._max_concurrent = max_concurrent if max_concurrent is not None else self.config.max_concurrent
 
@@ -56,11 +58,9 @@ class BedrockLLMClient:
             session = aioboto3.Session()
             self.client = await session.client("bedrock-runtime", **creds).__aenter__()
             self.models_client = await session.client("bedrock", **creds).__aenter__()
-            logger.debug(f"Bedrock client initialized - region: {creds['region_name']}")
         except ImportError:
             raise ImportError("aioboto3 is required. Install with: pip install aioboto3")
-        except Exception as e:
-            logger.error(f"Failed to initialize Bedrock client: {e}")
+        except Exception:
             raise
 
     async def close(self):
@@ -94,7 +94,6 @@ class BedrockLLMClient:
                         break
             
             self._semaphores[model] = asyncio.Semaphore(limit)
-            logger.debug(f"Created semaphore for {model} with limit={limit}")
         
         return self._semaphores[model]
 
@@ -117,8 +116,7 @@ class BedrockLLMClient:
         try:
             response = await self.models_client.list_foundation_models()
             return response.get("modelSummaries", [])
-        except Exception as e:
-            logger.error(f"Error listing models: {e}")
+        except Exception:
             return []
     
     async def list_available_model_ids(self) -> List[str]:
@@ -130,15 +128,12 @@ class BedrockLLMClient:
         models = await self.list_available_models()
         return [m.get("modelId") for m in models if isinstance(m, dict) and m.get("modelId")]
 
+    def __str__(self):
+        return f"BedrockLLMClient({self.config.default_model})"
+
+    @Logger(exclude_args=[])
     async def generate_text(self, request: TextRequest) -> TextResponse:
-        """Generate text from a prompt
-        
-        Args:
-            request: TextRequest with prompt and parameters
-            
-        Returns:
-            TextResponse with generated text
-        """
+        """Generate text from a prompt"""
         if not self.client:
             await self._init_client()
             
@@ -157,26 +152,20 @@ class BedrockLLMClient:
                 response_format=request.response_format.__name__ if request.response_format else None
             )
         
-        # Clear this specific cache entry if requested
         if request.clear_cache and cache_key:
             self.cache.clear(cache_key)
-            logger.info(f"Cleared cache entry: {cache_key[:8]}...")
         
-        # Check cache only if caching enabled
         if request.use_cache and cache_key:
             cached = self.cache.get(cache_key)
             if cached:
-                logger.info(f"Cache hit [{cache_key[:8]}] - {model} - prompt: {request.prompt[:50]}...")
+                Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 return self._deserialize_response(cached["data"], request.response_format)
         
-        # Log API call
         if request.reasoning_effort:
-            logger.warning(f"reasoning_effort='{request.reasoning_effort}' is not supported by Bedrock and will be ignored")
+            Logger.note(f"reasoning_effort='{request.reasoning_effort}' ignored by Bedrock")
 
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
-        logger.info(f"API call to {model} - temp={temperature} - prompt: {prompt_preview}")
-        
-        start_time = time.time()
+        Logger.note(f"{model} | temp={temperature} | {prompt_preview}")
         
         body = self._build_request_body(
             model=model,
@@ -200,14 +189,8 @@ class BedrockLLMClient:
             
             response_body = json.loads(await response["body"].read())
             result = self._parse_response(response_body, model, request.response_format)
+            Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
-            elapsed = time.time() - start_time
-            logger.info(
-                f"Response received - {result.input_tokens} in / {result.output_tokens} out tokens - "
-                f"{elapsed:.2f}s - {result.text[:50]}..."
-            )
-            
-            # Cache if applicable
             if cache_key:
                 cache_metadata = {
                     "prompt": request.prompt,
@@ -220,13 +203,10 @@ class BedrockLLMClient:
                     "top_k": request.top_k or self.config.top_k,
                 }
                 self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
-                logger.debug(f"Cached response: {cache_key[:8]}...")
             
             return result
             
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"Error after {elapsed:.2f}s - {model}: {str(e)}")
+        except Exception:
             raise
 
     async def generate_text_stream(self, request: TextRequest) -> AsyncIterator[StreamChunk]:
@@ -266,19 +246,12 @@ class BedrockLLMClient:
                     if text:
                         yield StreamChunk(text=text, model=model)
                         
-        except Exception as e:
-            logger.error(f"Error in streaming: {e}")
+        except Exception:
             raise
 
+    @Logger(exclude_args=[])
     async def send_message(self, request: MessageRequest) -> TextResponse:
-        """Send a message in a conversation
-        
-        Args:
-            request: MessageRequest with message history
-            
-        Returns:
-            TextResponse with assistant's response
-        """
+        """Send a message in a conversation"""
         if not self.client:
             await self._init_client()
             
@@ -298,23 +271,17 @@ class BedrockLLMClient:
                 response_format=request.response_format.__name__ if request.response_format else None
             )
         
-        # Clear this specific cache entry if requested
         if request.clear_cache and cache_key:
             self.cache.clear(cache_key)
-            logger.info(f"Cleared cache entry: {cache_key[:8]}...")
         
-        # Check cache only if caching enabled
         if request.use_cache and cache_key:
             cached = self.cache.get(cache_key)
             if cached:
-                logger.info(f"Cache hit [{cache_key[:8]}] - {model} - {len(request.messages)} messages")
+                Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 return self._deserialize_response(cached["data"], request.response_format)
         
-        # Log API call
         last_msg = request.messages[-1].content[:60] if request.messages else ""
-        logger.info(f"API call to {model} - temp={temperature} - {len(request.messages)} messages - last: {last_msg}...")
-        
-        start_time = time.time()
+        Logger.note(f"{model} | {len(request.messages)} messages | {last_msg}")
         
         messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
         
@@ -344,14 +311,8 @@ class BedrockLLMClient:
             
             response_body = json.loads(await response["body"].read())
             result = self._parse_response(response_body, model, request.response_format)
+            Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
-            elapsed = time.time() - start_time
-            logger.info(
-                f"Response received - {result.input_tokens} in / {result.output_tokens} out tokens - "
-                f"{elapsed:.2f}s - {result.text[:50]}..."
-            )
-            
-            # Cache if applicable
             if cache_key:
                 cache_metadata = {
                     "messages": [{"role": m.role, "content": m.content} for m in request.messages],
@@ -362,13 +323,10 @@ class BedrockLLMClient:
                     "response_format": request.response_format.__name__ if request.response_format else None,
                 }
                 self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
-                logger.debug(f"Cached response: {cache_key[:8]}...")
             
             return result
             
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"Error after {elapsed:.2f}s - {model}: {str(e)}")
+        except Exception:
             raise
 
     async def send_message_stream(self, request: MessageRequest) -> AsyncIterator[StreamChunk]:
@@ -411,8 +369,7 @@ class BedrockLLMClient:
                     if text:
                         yield StreamChunk(text=text, model=model)
                         
-        except Exception as e:
-            logger.error(f"Error in streaming: {e}")
+        except Exception:
             raise
 
     def _build_request_body(

@@ -37,10 +37,10 @@ class LLMClient:
         # Initialize the appropriate provider client
         if config.provider == "openai":
             provider_config = config.to_openai_config()
-            self._client = OpenAILLMClient(provider_config, max_concurrent=max_concurrent)
+            self._client = OpenAILLMClient(provider_config, max_concurrent=max_concurrent, dynamo_table_name=config.dynamo_table_name, cache_ttl_days=config.cache_ttl_days)
         elif config.provider == "bedrock":
             provider_config = config.to_bedrock_config()
-            self._client = BedrockLLMClient(provider_config, max_concurrent=max_concurrent)
+            self._client = BedrockLLMClient(provider_config, max_concurrent=max_concurrent, dynamo_table_name=config.dynamo_table_name, cache_ttl_days=config.cache_ttl_days)
         else:
             raise ValueError(f"Unknown provider: {config.provider}. Use 'openai' or 'bedrock'.")
     

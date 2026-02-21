@@ -1,14 +1,11 @@
 """OpenAI Chat Completions API implementation"""
 
 import json
-import logging
-import time
 from typing import Optional, Type, Dict, Any, AsyncIterator
 from pydantic import BaseModel
+from logorator import Logger
 from ..models import TextRequest, MessageRequest, TextResponse, StreamChunk
 from ..utils import pydantic_to_tool_schema, JSONFileCache
-
-logger = logging.getLogger('smartllm')
 
 
 class ChatCompletionsAPI:
@@ -20,6 +17,10 @@ class ChatCompletionsAPI:
         self.cache = cache
         self.semaphore = semaphore
     
+    def __str__(self):
+        return "OpenAI ChatCompletionsAPI"
+
+    @Logger(exclude_args=["invoke_with_retry"])
     async def generate_text(self, request: TextRequest, invoke_with_retry) -> TextResponse:
         """Generate text using Chat Completions API"""
         model = request.model or self.config.default_model
@@ -39,18 +40,15 @@ class ChatCompletionsAPI:
         
         if request.clear_cache and cache_key:
             self.cache.clear(cache_key)
-            logger.info(f"Cleared cache entry: {cache_key[:8]}...")
         
         if request.use_cache and cache_key:
             cached = self.cache.get(cache_key)
             if cached:
-                logger.info(f"Cache hit [{cache_key[:8]}] - {model} - prompt: {request.prompt[:50]}...")
+                Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 return self._deserialize_response(cached["data"], request.response_format)
         
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
-        logger.info(f"API call to {model} (Chat Completions) - temp={temperature} - prompt: {prompt_preview}")
-        
-        start_time = time.time()
+        Logger.note(f"{model} | temp={temperature} | {prompt_preview}")
         
         # Build messages
         messages = []
@@ -80,21 +78,13 @@ class ChatCompletionsAPI:
                 response = await invoke_with_retry(self.client.chat.completions.create, **params)
             
             result = self._parse_response(response, model, request.response_format)
-            
-            elapsed = time.time() - start_time
-            logger.info(
-                f"Response received - {result.input_tokens} in / {result.output_tokens} out tokens - "
-                f"{elapsed:.2f}s - {result.text[:50]}..."
-            )
+            Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
             if cache_key:
                 self.cache.set(cache_key, self._serialize_response(result), {})
-                logger.debug(f"Cached response: {cache_key[:8]}...")
             
             return result
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"Error after {elapsed:.2f}s - {model}: {str(e)}")
+        except Exception:
             raise
     
     async def generate_text_stream(self, request: TextRequest) -> AsyncIterator[StreamChunk]:
@@ -119,10 +109,10 @@ class ChatCompletionsAPI:
             async for chunk in stream:
                 if chunk.choices[0].delta.content:
                     yield StreamChunk(text=chunk.choices[0].delta.content, model=model)
-        except Exception as e:
-            logger.error(f"Error in streaming: {e}")
+        except Exception:
             raise
     
+    @Logger(exclude_args=["invoke_with_retry"])
     async def send_message(self, request: MessageRequest, invoke_with_retry) -> TextResponse:
         """Send a message in a conversation"""
         model = request.model or self.config.default_model
@@ -143,18 +133,15 @@ class ChatCompletionsAPI:
         
         if request.clear_cache and cache_key:
             self.cache.clear(cache_key)
-            logger.info(f"Cleared cache entry: {cache_key[:8]}...")
         
         if request.use_cache and cache_key:
             cached = self.cache.get(cache_key)
             if cached:
-                logger.info(f"Cache hit [{cache_key[:8]}] - {model} - {len(request.messages)} messages")
+                Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 return self._deserialize_response(cached["data"], request.response_format)
         
         last_msg = request.messages[-1].content[:60] if request.messages else ""
-        logger.info(f"API call to {model} (Chat Completions) - temp={temperature} - {len(request.messages)} messages - last: {last_msg}...")
-        
-        start_time = time.time()
+        Logger.note(f"{model} | {len(request.messages)} messages | {last_msg}")
         
         messages = []
         if request.system_prompt:
@@ -180,21 +167,13 @@ class ChatCompletionsAPI:
                 response = await invoke_with_retry(self.client.chat.completions.create, **params)
             
             result = self._parse_response(response, model, request.response_format)
-            
-            elapsed = time.time() - start_time
-            logger.info(
-                f"Response received - {result.input_tokens} in / {result.output_tokens} out tokens - "
-                f"{elapsed:.2f}s - {result.text[:50]}..."
-            )
+            Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
             if cache_key:
                 self.cache.set(cache_key, self._serialize_response(result), {})
-                logger.debug(f"Cached response: {cache_key[:8]}...")
             
             return result
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"Error after {elapsed:.2f}s - {model}: {str(e)}")
+        except Exception:
             raise
     
     async def send_message_stream(self, request: MessageRequest) -> AsyncIterator[StreamChunk]:
@@ -219,8 +198,7 @@ class ChatCompletionsAPI:
             async for chunk in stream:
                 if chunk.choices[0].delta.content:
                     yield StreamChunk(text=chunk.choices[0].delta.content, model=model)
-        except Exception as e:
-            logger.error(f"Error in streaming: {e}")
+        except Exception:
             raise
     
     def _build_tool_schema(self, response_format: Type[BaseModel]) -> Dict[str, Any]:

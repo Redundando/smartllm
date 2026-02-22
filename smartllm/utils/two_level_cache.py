@@ -32,11 +32,12 @@ class TwoLevelCache:
     def _generate_key(self, **kwargs) -> str:
         return self.local._generate_key(**kwargs)
 
-    def get(self, cache_key: str) -> Optional[Dict[str, Any]]:
+    def get(self, cache_key: str) -> tuple[Optional[Dict[str, Any]], str]:
+        """Returns (data, cache_source) where cache_source is 'l1', 'l2', or 'miss'."""
         # 1. Local
         result = self.local.get(cache_key)
         if result is not None:
-            return result
+            return result, "l1"
 
         # 2. DynamoDB
         if self._dynamo:
@@ -44,9 +45,9 @@ class TwoLevelCache:
             if result is not None:
                 Logger.note(f"DynamoDB cache hit [{cache_key[:8]}], writing to local")
                 self.local.set(cache_key, result.get("data", {}), result.get("metadata"))
-                return result
+                return result, "l2"
 
-        return None
+        return None, "miss"
 
     def set(self, cache_key: str, data: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None):
         self.local.set(cache_key, data, metadata)

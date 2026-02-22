@@ -2,7 +2,7 @@
 Package: pydantic
 Version: 2.12.5
 Source: https://pypi.org/project/pydantic/
-Fetched: 2026-02-21 15:17:27
+Fetched: 2026-02-22 16:06:18
 ---
 
 # Pydantic Validation

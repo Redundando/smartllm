@@ -42,10 +42,12 @@ class ChatCompletionsAPI:
             self.cache.clear(cache_key)
         
         if request.use_cache and cache_key:
-            cached = self.cache.get(cache_key)
+            cached, cache_source = self.cache.get(cache_key)
             if cached:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
-                return self._deserialize_response(cached["data"], request.response_format)
+                result = self._deserialize_response(cached["data"], request.response_format)
+                result.cache_source = cache_source
+                return result
         
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
         Logger.note(f"{model} | temp={temperature} | {prompt_preview}")
@@ -135,10 +137,12 @@ class ChatCompletionsAPI:
             self.cache.clear(cache_key)
         
         if request.use_cache and cache_key:
-            cached = self.cache.get(cache_key)
+            cached, cache_source = self.cache.get(cache_key)
             if cached:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
-                return self._deserialize_response(cached["data"], request.response_format)
+                result = self._deserialize_response(cached["data"], request.response_format)
+                result.cache_source = cache_source
+                return result
         
         last_msg = request.messages[-1].content[:60] if request.messages else ""
         Logger.note(f"{model} | {len(request.messages)} messages | {last_msg}")

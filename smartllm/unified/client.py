@@ -1,10 +1,22 @@
 """Unified LLM client that works with multiple providers"""
 
+import asyncio
+import inspect
+import time
 from typing import Optional, AsyncIterator, Union
 from .config import LLMConfig
 from ..bedrock import BedrockLLMClient
 from ..openai import OpenAILLMClient
 from ..models import TextRequest, MessageRequest, TextResponse, StreamChunk
+
+
+async def _fire(callback, event: dict):
+    if callback is None:
+        return
+    if inspect.iscoroutinefunction(callback):
+        await callback(event)
+    else:
+        callback(event)
 
 
 class LLMClient:
@@ -63,15 +75,22 @@ class LLMClient:
         await self._client.close()
     
     async def generate_text(self, request: TextRequest) -> TextResponse:
-        """Generate text from a prompt
-        
-        Args:
-            request: TextRequest with prompt and parameters
-            
-        Returns:
-            TextResponse with generated text
-        """
-        return await self._client.generate_text(request)
+        cb = request.on_progress
+        prompt = request.prompt
+        model = request.model or self._client.config.default_model
+        provider = self.config.provider
+        base = {"prompt": prompt, "model": model, "provider": provider}
+        await _fire(cb, {"event": "llm_started", "ts": time.time(), **base})
+        try:
+            result = await self._client.generate_text(request)
+            if result.cache_source != "miss":
+                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, **base})
+            else:
+                await _fire(cb, {"event": "llm_done", "ts": time.time(), **base})
+            return result
+        except Exception as e:
+            await _fire(cb, {"event": "error", "ts": time.time(), "message": str(e), **base})
+            raise
     
     async def generate_text_stream(self, request: TextRequest) -> AsyncIterator[StreamChunk]:
         """Stream text generation
@@ -86,15 +105,22 @@ class LLMClient:
             yield chunk
     
     async def send_message(self, request: MessageRequest) -> TextResponse:
-        """Send a message in a conversation
-        
-        Args:
-            request: MessageRequest with message history
-            
-        Returns:
-            TextResponse with assistant's response
-        """
-        return await self._client.send_message(request)
+        cb = request.on_progress
+        prompt = request.messages[-1].content if request.messages else ""
+        model = request.model or self._client.config.default_model
+        provider = self.config.provider
+        base = {"prompt": prompt, "model": model, "provider": provider}
+        await _fire(cb, {"event": "llm_started", "ts": time.time(), **base})
+        try:
+            result = await self._client.send_message(request)
+            if result.cache_source != "miss":
+                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, **base})
+            else:
+                await _fire(cb, {"event": "llm_done", "ts": time.time(), **base})
+            return result
+        except Exception as e:
+            await _fire(cb, {"event": "error", "ts": time.time(), "message": str(e), **base})
+            raise
     
     async def send_message_stream(self, request: MessageRequest) -> AsyncIterator[StreamChunk]:
         """Stream a conversation message

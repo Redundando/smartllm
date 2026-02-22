@@ -15,6 +15,7 @@ A unified async Python wrapper for multiple LLM providers with a consistent inte
 - **Streaming** - Real-time streaming responses for better UX
 - **Rate Limiting** - Built-in concurrency control per model
 - **Decorator Logging** - Automatic function logging via [Logorator](https://pypi.org/project/logorator/)
+- **Progress Callbacks** - Optional `on_progress` callback for real-time LLM events
 - **OpenAI Response API** - Full support for OpenAI's primary API including reasoning models
 
 ## Installation
@@ -281,6 +282,29 @@ async with LLMClient(provider="openai") as client:
 client = LLMClient(provider="openai", max_concurrent=5)
 ```
 
+### Progress Callbacks
+
+Pass an `on_progress` callable to `TextRequest` or `MessageRequest` to receive real-time events. Both sync and async callables are supported.
+
+```python
+async def on_progress(event):
+    print(event)
+
+async with LLMClient(provider="openai") as client:
+    response = await client.generate_text(
+        TextRequest(prompt="What is the capital of France?", on_progress=on_progress)
+    )
+```
+
+Each event is a dict with `event`, `ts` (Unix timestamp), `prompt`, `model`, and `provider` fields:
+
+| event | additional fields | notes |
+|---|---|---|
+| `llm_started` | — | fired before API call / cache check |
+| `llm_done` | — | fired after a live API call completes |
+| `cache_hit` | `cache_source` | fired when response is served from cache; `cache_source` is `"l1"` (local) or `"l2"` (DynamoDB) |
+| `error` | `message` | fired on exception |
+
 ### Provider-Specific Clients
 
 For advanced use cases, access provider-specific clients:
@@ -333,6 +357,7 @@ async with BedrockLLMClient(bedrock_config) as client:
 | `clear_cache` | bool | Clear cache before request | False |
 | `api_type` | str | OpenAI API type (`"responses"` or `"chat_completions"`) | `"responses"` |
 | `reasoning_effort` | str | Reasoning effort (`"low"`, `"medium"`, `"high"`) | None |
+| `on_progress` | Callable | Progress event callback (sync or async) | None |
 
 ## Error Handling
 
@@ -391,6 +416,12 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### Version 0.1.6
+- Added `on_progress` callback to `TextRequest` and `MessageRequest`
+- Events: `llm_started`, `llm_done`, `cache_hit` (with `cache_source`), `error`
+- Both sync and async callables supported
+- `cache_source` on `TextResponse` indicates cache origin: `"miss"`, `"l1"`, or `"l2"`
 
 ### Version 0.1.5
 - Replaced custom logging with [Logorator](https://pypi.org/project/logorator/) decorator-based logging

@@ -156,10 +156,12 @@ class BedrockLLMClient:
             self.cache.clear(cache_key)
         
         if request.use_cache and cache_key:
-            cached = self.cache.get(cache_key)
+            cached, cache_source = self.cache.get(cache_key)
             if cached:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
-                return self._deserialize_response(cached["data"], request.response_format)
+                result = self._deserialize_response(cached["data"], request.response_format)
+                result.cache_source = cache_source
+                return result
         
         if request.reasoning_effort:
             Logger.note(f"reasoning_effort='{request.reasoning_effort}' ignored by Bedrock")
@@ -275,10 +277,12 @@ class BedrockLLMClient:
             self.cache.clear(cache_key)
         
         if request.use_cache and cache_key:
-            cached = self.cache.get(cache_key)
+            cached, cache_source = self.cache.get(cache_key)
             if cached:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
-                return self._deserialize_response(cached["data"], request.response_format)
+                result = self._deserialize_response(cached["data"], request.response_format)
+                result.cache_source = cache_source
+                return result
         
         last_msg = request.messages[-1].content[:60] if request.messages else ""
         Logger.note(f"{model} | {len(request.messages)} messages | {last_msg}")

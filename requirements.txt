@@ -2,3 +2,6 @@
 #   pip install smartllm[all]       # all providers
 #   pip install smartllm[openai]    # OpenAI only
 #   pip install smartllm[bedrock]   # AWS Bedrock only
+cacherator
+ghostscraper
+searcherator

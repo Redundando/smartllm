@@ -1,7 +1,7 @@
 """Shared data models for SmartLLM"""
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Type
+from typing import Optional, List, Dict, Any, Type, Callable
 from pydantic import BaseModel
 
 
@@ -36,6 +36,7 @@ class TextRequest:
     clear_cache: bool = False
     api_type: str = "responses"
     reasoning_effort: Optional[str] = None  # "low", "medium", "high" - reasoning models only
+    on_progress: Optional[Callable] = None
 
     def __str__(self):
         return self.prompt[:150] + "..." if len(self.prompt) > 150 else self.prompt
@@ -79,6 +80,7 @@ class MessageRequest:
     use_cache: bool = True
     clear_cache: bool = False
     api_type: str = "responses"
+    on_progress: Optional[Callable] = None
 
     def __str__(self):
         last = self.messages[-1].content if self.messages else ""
@@ -105,6 +107,7 @@ class TextResponse:
     output_tokens: int
     metadata: Dict[str, Any] = field(default_factory=dict)
     structured_data: Optional[BaseModel] = None
+    cache_source: str = "miss"
 
 
 @dataclass

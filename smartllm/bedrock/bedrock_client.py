@@ -148,6 +148,8 @@ class BedrockLLMClient:
                 model=model,
                 prompt=request.prompt,
                 max_tokens=request.max_tokens or self.config.max_tokens,
+                top_p=request.top_p,
+                top_k=request.top_k,
                 system_prompt=request.system_prompt,
                 response_format=request.response_format.__name__ if request.response_format else None
             )
@@ -161,6 +163,7 @@ class BedrockLLMClient:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 result = self._deserialize_response(cached["data"], request.response_format)
                 result.cache_source = cache_source
+                result.cache_key = cache_key
                 return result
         
         if request.reasoning_effort:
@@ -205,7 +208,7 @@ class BedrockLLMClient:
                     "top_k": request.top_k or self.config.top_k,
                 }
                 self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
-            
+            result.cache_key = cache_key
             return result
             
         except Exception:
@@ -282,6 +285,7 @@ class BedrockLLMClient:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 result = self._deserialize_response(cached["data"], request.response_format)
                 result.cache_source = cache_source
+                result.cache_key = cache_key
                 return result
         
         last_msg = request.messages[-1].content[:60] if request.messages else ""
@@ -327,7 +331,7 @@ class BedrockLLMClient:
                     "response_format": request.response_format.__name__ if request.response_format else None,
                 }
                 self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
-            
+            result.cache_key = cache_key
             return result
             
         except Exception:

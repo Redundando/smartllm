@@ -239,18 +239,23 @@ async with LLMClient(provider="openai") as client:
 
 ### Caching
 
-Responses are automatically cached when `temperature=0`:
+Responses are automatically cached when `temperature=0` (or when using reasoning models). Streaming responses are never cached.
+
+The cache key is derived from: `model`, `prompt` (or `messages`), `max_tokens`, `top_p`, `system_prompt`, `response_format`, `api_type`, and `reasoning_effort`. Changing any of these produces a different cache entry.
 
 ```python
 # First call - hits API
 response1 = await client.generate_text(
     TextRequest(prompt="What is 2+2?", temperature=0)
 )
+print(response1.cache_key)   # e.g. "0595d7cce482df71"
+print(response1.cache_source)  # "miss"
 
 # Second call - uses cache (instant, free)
 response2 = await client.generate_text(
     TextRequest(prompt="What is 2+2?", temperature=0)
 )
+print(response2.cache_source)  # "l1" (local) or "l2" (DynamoDB)
 
 # Clear cache for specific request
 response3 = await client.generate_text(
@@ -302,7 +307,7 @@ Each event is a dict with `event`, `ts` (Unix timestamp), `prompt`, `model`, and
 |---|---|---|
 | `llm_started` | — | fired before API call / cache check |
 | `llm_done` | — | fired after a live API call completes |
-| `cache_hit` | `cache_source` | fired when response is served from cache; `cache_source` is `"l1"` (local) or `"l2"` (DynamoDB) |
+| `cache_hit` | `cache_source`, `cache_key` | fired when response is served from cache; `cache_source` is `"l1"` (local) or `"l2"` (DynamoDB) |
 | `error` | `message` | fired on exception |
 
 ### Provider-Specific Clients

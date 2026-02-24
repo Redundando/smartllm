@@ -108,6 +108,7 @@ class TextResponse:
     metadata: Dict[str, Any] = field(default_factory=dict)
     structured_data: Optional[BaseModel] = None
     cache_source: str = "miss"
+    cache_key: Optional[str] = None
 
 
 @dataclass

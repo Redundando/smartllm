@@ -34,6 +34,7 @@ class ChatCompletionsAPI:
                 model=model,
                 prompt=request.prompt,
                 max_tokens=request.max_tokens or self.config.max_tokens,
+                top_p=request.top_p,
                 system_prompt=request.system_prompt,
                 response_format=request.response_format.__name__ if request.response_format else None
             )
@@ -47,6 +48,7 @@ class ChatCompletionsAPI:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 result = self._deserialize_response(cached["data"], request.response_format)
                 result.cache_source = cache_source
+                result.cache_key = cache_key
                 return result
         
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
@@ -84,7 +86,7 @@ class ChatCompletionsAPI:
             
             if cache_key:
                 self.cache.set(cache_key, self._serialize_response(result), {})
-            
+            result.cache_key = cache_key
             return result
         except Exception:
             raise
@@ -142,6 +144,7 @@ class ChatCompletionsAPI:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
                 result = self._deserialize_response(cached["data"], request.response_format)
                 result.cache_source = cache_source
+                result.cache_key = cache_key
                 return result
         
         last_msg = request.messages[-1].content[:60] if request.messages else ""
@@ -175,7 +178,7 @@ class ChatCompletionsAPI:
             
             if cache_key:
                 self.cache.set(cache_key, self._serialize_response(result), {})
-            
+            result.cache_key = cache_key
             return result
         except Exception:
             raise

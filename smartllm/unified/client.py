@@ -84,7 +84,7 @@ class LLMClient:
         try:
             result = await self._client.generate_text(request)
             if result.cache_source != "miss":
-                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, **base})
+                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, "cache_key": result.cache_key, **base})
             else:
                 await _fire(cb, {"event": "llm_done", "ts": time.time(), **base})
             return result
@@ -114,7 +114,7 @@ class LLMClient:
         try:
             result = await self._client.send_message(request)
             if result.cache_source != "miss":
-                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, **base})
+                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, "cache_key": result.cache_key, **base})
             else:
                 await _fire(cb, {"event": "llm_done", "ts": time.time(), **base})
             return result

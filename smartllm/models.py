@@ -105,6 +105,10 @@ class TextResponse:
     stop_reason: str
     input_tokens: int
     output_tokens: int
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    timestamp: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     structured_data: Optional[BaseModel] = None
     cache_source: str = "miss"

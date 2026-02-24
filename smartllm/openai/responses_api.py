@@ -98,14 +98,24 @@ class ResponsesAPI:
                 }
             }
         
+        import time
+        from datetime import datetime, timezone
+
         try:
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
             if self.semaphore:
                 async with self.semaphore:
                     response = await invoke_with_retry(self.client.responses.create, **params)
             else:
                 response = await invoke_with_retry(self.client.responses.create, **params)
+            elapsed = round(time.monotonic() - t0, 3)
             
             result = self._parse_response(response, model, request.response_format)
+            result.timestamp = started_at
+            result.elapsed_seconds = elapsed
+            result.metadata["prompt"] = request.prompt
+            result.metadata["response_format"] = request.response_format.model_json_schema() if request.response_format else None
             Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
             if cache_key:
@@ -153,13 +163,11 @@ class ResponsesAPI:
         
         # Capture reasoning tokens in metadata if present
         metadata = {}
+        reasoning_tokens = 0
+        cached_tokens = 0
         if response.usage:
             reasoning_tokens = getattr(getattr(response.usage, "output_tokens_details", None), "reasoning_tokens", 0)
             cached_tokens = getattr(getattr(response.usage, "input_tokens_details", None), "cached_tokens", 0)
-            if reasoning_tokens:
-                metadata["reasoning_tokens"] = reasoning_tokens
-            if cached_tokens:
-                metadata["cached_tokens"] = cached_tokens
         
         return TextResponse(
             text=text,
@@ -167,6 +175,8 @@ class ResponsesAPI:
             stop_reason=response.status or "",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cached_tokens=cached_tokens,
             metadata=metadata,
             structured_data=structured_data,
         )
@@ -179,6 +189,10 @@ class ResponsesAPI:
             "stop_reason": response.stop_reason,
             "input_tokens": response.input_tokens,
             "output_tokens": response.output_tokens,
+            "reasoning_tokens": response.reasoning_tokens,
+            "cached_tokens": response.cached_tokens,
+            "timestamp": response.timestamp,
+            "elapsed_seconds": response.elapsed_seconds,
             "metadata": response.metadata,
             "structured_data": response.structured_data.model_dump() if response.structured_data else None,
         }
@@ -195,6 +209,10 @@ class ResponsesAPI:
             stop_reason=data["stop_reason"],
             input_tokens=data["input_tokens"],
             output_tokens=data["output_tokens"],
+            reasoning_tokens=data.get("reasoning_tokens", 0),
+            cached_tokens=data.get("cached_tokens", 0),
+            timestamp=data.get("timestamp"),
+            elapsed_seconds=data.get("elapsed_seconds"),
             metadata=data.get("metadata", {}),
             structured_data=structured_data,
         )

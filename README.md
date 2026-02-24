@@ -7,59 +7,31 @@ A unified async Python wrapper for multiple LLM providers with a consistent inte
 
 ## Features
 
-- **Unified Interface** - Single API for multiple LLM providers (OpenAI, AWS Bedrock)
-- **Async/Await** - Built on asyncio for high-performance concurrent requests
-- **Smart Caching** - Two-level cache (local + DynamoDB) to reduce costs and latency
-- **Auto Retry** - Exponential backoff retry logic for transient failures
-- **Structured Output** - Native Pydantic model support for type-safe responses
-- **Streaming** - Real-time streaming responses for better UX
-- **Rate Limiting** - Built-in concurrency control per model
-- **Decorator Logging** - Automatic function logging via [Logorator](https://pypi.org/project/logorator/)
-- **Progress Callbacks** - Optional `on_progress` callback for real-time LLM events
-- **OpenAI Response API** - Full support for OpenAI's primary API including reasoning models
+- **Unified Interface** — Single API for OpenAI and AWS Bedrock
+- **Async/Await** — Built on asyncio for concurrent requests
+- **Smart Caching** — Two-level cache (local JSON + optional DynamoDB)
+- **Auto Retry** — Exponential backoff for transient failures
+- **Structured Output** — Native Pydantic model support
+- **Streaming** — Real-time streaming responses
+- **Rate Limiting** — Built-in concurrency control per model
+- **Reasoning Models** — Full support including `reasoning_effort` and `reasoning_tokens`
+- **Progress Callbacks** — Optional `on_progress` for real-time events
 
 ## Installation
 
 ```bash
-pip install smartllm
+pip install smartllm[openai]   # OpenAI only
+pip install smartllm[bedrock]  # AWS Bedrock only
+pip install smartllm[all]      # All providers
 ```
-
-### Optional Dependencies
-
-Install only the providers you need:
-
-```bash
-# For OpenAI
-pip install smartllm[openai]
-
-# For AWS Bedrock
-pip install smartllm[bedrock]
-
-# For all providers
-pip install smartllm[all]
-```
-
-### DynamoDB Caching (optional)
-
-To enable shared two-level caching across machines:
-
-```python
-async with LLMClient(provider="openai", dynamo_table_name="my-llm-cache") as client:
-    ...
-```
-
-Requires AWS credentials with DynamoDB access. The table is auto-created if it doesn't exist. Local file cache is always used as the first layer.
 
 ## Quick Start
-
-### Basic Usage
 
 ```python
 import asyncio
 from smartllm import LLMClient, TextRequest
 
 async def main():
-    # Auto-detects provider from environment variables
     async with LLMClient(provider="openai") as client:
         response = await client.generate_text(
             TextRequest(prompt="What is the capital of France?")
@@ -69,62 +41,6 @@ async def main():
 asyncio.run(main())
 ```
 
-### Multi-turn Conversations
-
-```python
-from smartllm import LLMClient, MessageRequest, Message
-
-async with LLMClient(provider="openai") as client:
-    messages = [
-        Message(role="user", content="My name is Alice."),
-        Message(role="assistant", content="Nice to meet you, Alice!"),
-        Message(role="user", content="What's my name?"),
-    ]
-    
-    response = await client.send_message(
-        MessageRequest(messages=messages)
-    )
-    print(response.text)  # "Your name is Alice."
-```
-
-### Streaming Responses
-
-```python
-from smartllm import LLMClient, TextRequest
-
-async with LLMClient(provider="openai") as client:
-    request = TextRequest(
-        prompt="Write a short poem about Python.",
-        stream=True
-    )
-    
-    async for chunk in client.generate_text_stream(request):
-        print(chunk.text, end="", flush=True)
-```
-
-### Structured Output with Pydantic
-
-```python
-from pydantic import BaseModel
-from smartllm import LLMClient, TextRequest
-
-class Person(BaseModel):
-    name: str
-    age: int
-    occupation: str
-
-async with LLMClient(provider="openai") as client:
-    response = await client.generate_text(
-        TextRequest(
-            prompt="Generate a person profile for a software engineer named John, age 30.",
-            response_format=Person
-        )
-    )
-    
-    person = response.structured_data
-    print(f"{person.name} is a {person.age} year old {person.occupation}")
-```
-
 ## Configuration
 
 ### Environment Variables
@@ -132,7 +48,7 @@ async with LLMClient(provider="openai") as client:
 **OpenAI:**
 ```bash
 export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="gpt-4o-mini"  # Optional
+export OPENAI_MODEL="gpt-4o-mini"  # optional
 ```
 
 **AWS Bedrock:**
@@ -140,7 +56,7 @@ export OPENAI_MODEL="gpt-4o-mini"  # Optional
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
 export AWS_REGION="us-east-1"
-export BEDROCK_MODEL="anthropic.claude-3-sonnet-20240229-v1:0"  # Optional
+export BEDROCK_MODEL="anthropic.claude-3-sonnet-20240229-v1:0"  # optional
 ```
 
 ### Programmatic Configuration
@@ -158,43 +74,54 @@ config = LLMConfig(
 )
 
 async with LLMClient(config) as client:
-    # Use client...
-    pass
+    ...
 ```
 
-### Customizing Defaults
+## Usage Examples
+
+### Multi-turn Conversations
 
 ```python
-from smartllm import defaults
+from smartllm import LLMClient, MessageRequest, Message
 
-# Modify global defaults
-defaults.DEFAULT_TEMPERATURE = 0.7
-defaults.DEFAULT_MAX_TOKENS = 4096
-defaults.DEFAULT_MAX_RETRIES = 5
+async with LLMClient(provider="openai") as client:
+    messages = [
+        Message(role="user", content="My name is Alice."),
+        Message(role="assistant", content="Nice to meet you, Alice!"),
+        Message(role="user", content="What's my name?"),
+    ]
+    response = await client.send_message(MessageRequest(messages=messages))
+    print(response.text)  # "Your name is Alice."
 ```
 
-### OpenAI API Types
-
-SmartLLM supports both OpenAI APIs via the `api_type` parameter:
-
-- `"responses"` (default) - OpenAI's primary [Response API](https://platform.openai.com/docs/api-reference/responses), recommended for all modern models
-- `"chat_completions"` - Legacy [Chat Completions API](https://platform.openai.com/docs/api-reference/chat), supported indefinitely
+### Structured Output
 
 ```python
-# Response API (default)
-response = await client.generate_text(
-    TextRequest(prompt="Hello", api_type="responses")
-)
+from pydantic import BaseModel
+from smartllm import LLMClient, TextRequest
 
-# Chat Completions API (legacy)
-response = await client.generate_text(
-    TextRequest(prompt="Hello", api_type="chat_completions")
-)
+class Person(BaseModel):
+    name: str
+    age: int
+
+async with LLMClient(provider="openai") as client:
+    response = await client.generate_text(
+        TextRequest(prompt="Return a person named John, age 30.", response_format=Person)
+    )
+    print(response.structured_data.name)  # "John"
+```
+
+### Streaming
+
+```python
+async with LLMClient(provider="openai") as client:
+    async for chunk in client.generate_text_stream(
+        TextRequest(prompt="Write a short poem.", stream=True)
+    ):
+        print(chunk.text, end="", flush=True)
 ```
 
 ### Reasoning Models
-
-For models that support reasoning (e.g. GPT-5.x), use `reasoning_effort` to control how much the model reasons before responding. Reasoning tokens are returned in `response.metadata`:
 
 ```python
 response = await client.generate_text(
@@ -203,156 +130,73 @@ response = await client.generate_text(
         reasoning_effort="high",  # "low", "medium", or "high"
     )
 )
-
 print(response.text)
-print(f"Reasoning tokens used: {response.metadata.get('reasoning_tokens', 0)}")
+print(f"Reasoning tokens: {response.reasoning_tokens}")
 ```
 
-Note: reasoning models do not support `temperature`. Passing a value other than `1` will raise a `ValueError`.
+Note: reasoning models do not support `temperature`. Passing a value other than `1` raises `ValueError`.
 
-### Reasoning with Structured Output
-
-```python
-from pydantic import BaseModel
-from smartllm import LLMClient, TextRequest
-
-class Solution(BaseModel):
-    answer: float
-    unit: str
-    explanation: str
-
-async with LLMClient(provider="openai") as client:
-    response = await client.generate_text(
-        TextRequest(
-            prompt="A train leaves city A at 60mph toward city B (300 miles away). Another leaves B at 90mph. When do they meet?",
-            response_format=Solution,
-            reasoning_effort="medium",
-        )
-    )
-
-    solution = response.structured_data
-    print(f"{solution.answer} {solution.unit}: {solution.explanation}")
-    print(f"Reasoning tokens: {response.metadata.get('reasoning_tokens', 0)}")
-```
-
-## Advanced Features
-
-### Caching
-
-Responses are automatically cached when `temperature=0` (or when using reasoning models). Streaming responses are never cached.
-
-The cache key is derived from: `model`, `prompt` (or `messages`), `max_tokens`, `top_p`, `system_prompt`, `response_format`, `api_type`, and `reasoning_effort`. Changing any of these produces a different cache entry.
+### OpenAI API Types
 
 ```python
-# First call - hits API
-response1 = await client.generate_text(
-    TextRequest(prompt="What is 2+2?", temperature=0)
-)
-print(response1.cache_key)   # e.g. "0595d7cce482df71"
-print(response1.cache_source)  # "miss"
+# Responses API (default, recommended)
+TextRequest(prompt="Hello", api_type="responses")
 
-# Second call - uses cache (instant, free)
-response2 = await client.generate_text(
-    TextRequest(prompt="What is 2+2?", temperature=0)
-)
-print(response2.cache_source)  # "l1" (local) or "l2" (DynamoDB)
-
-# Clear cache for specific request
-response3 = await client.generate_text(
-    TextRequest(prompt="What is 2+2?", temperature=0, clear_cache=True)
-)
+# Chat Completions API (legacy)
+TextRequest(prompt="Hello", api_type="chat_completions")
 ```
 
 ### Concurrent Requests
 
 ```python
-import asyncio
-from smartllm import LLMClient, TextRequest
-
-async with LLMClient(provider="openai") as client:
-    prompts = ["Question 1", "Question 2", "Question 3"]
-    
-    tasks = [
-        client.generate_text(TextRequest(prompt=p))
-        for p in prompts
-    ]
-    
-    responses = await asyncio.gather(*tasks)
-```
-
-### Rate Limiting
-
-```python
-# Limit concurrent requests
-client = LLMClient(provider="openai", max_concurrent=5)
+tasks = [client.generate_text(TextRequest(prompt=p)) for p in prompts]
+responses = await asyncio.gather(*tasks)
 ```
 
 ### Progress Callbacks
-
-Pass an `on_progress` callable to `TextRequest` or `MessageRequest` to receive real-time events. Both sync and async callables are supported.
 
 ```python
 async def on_progress(event):
     print(event)
 
-async with LLMClient(provider="openai") as client:
-    response = await client.generate_text(
-        TextRequest(prompt="What is the capital of France?", on_progress=on_progress)
-    )
+response = await client.generate_text(
+    TextRequest(prompt="Hello", on_progress=on_progress)
+)
 ```
 
-Each event is a dict with `event`, `ts` (Unix timestamp), `prompt`, `model`, and `provider` fields:
+Events: `llm_started`, `llm_done`, `cache_hit` (with `cache_source`, `cache_key`), `error` (with `message`). Each event dict includes `event`, `ts`, `prompt`, `model`, `provider`.
 
-| event | additional fields | notes |
-|---|---|---|
-| `llm_started` | — | fired before API call / cache check |
-| `llm_done` | — | fired after a live API call completes |
-| `cache_hit` | `cache_source`, `cache_key` | fired when response is served from cache; `cache_source` is `"l1"` (local) or `"l2"` (DynamoDB) |
-| `error` | `message` | fired on exception |
+### DynamoDB Caching
+
+```python
+async with LLMClient(provider="openai", dynamo_table_name="my-llm-cache") as client:
+    ...
+```
+
+Requires AWS credentials with DynamoDB access. Table is auto-created if it doesn't exist.
 
 ### Provider-Specific Clients
-
-For advanced use cases, access provider-specific clients:
 
 ```python
 from smartllm.openai import OpenAILLMClient, OpenAIConfig
 from smartllm.bedrock import BedrockLLMClient, BedrockConfig
 
-# OpenAI-specific features
-openai_config = OpenAIConfig(api_key="...", organization="...")
-async with OpenAILLMClient(openai_config) as client:
+async with OpenAILLMClient(OpenAIConfig(api_key="...")) as client:
     models = await client.list_available_models()
 
-# Bedrock-specific features
-bedrock_config = BedrockConfig(aws_region="us-east-1")
-async with BedrockLLMClient(bedrock_config) as client:
+async with BedrockLLMClient(BedrockConfig(aws_region="us-east-1")) as client:
     models = await client.list_available_model_ids()
 ```
 
-## Supported Providers
-
-- **OpenAI** - GPT models via OpenAI API
-- **AWS Bedrock** - Claude, Llama, Mistral, and Titan models
-
 ## API Reference
 
-### Core Classes
-
-- **`LLMClient`** - Unified client for all providers
-- **`LLMConfig`** - Unified configuration
-- **`TextRequest`** - Single prompt request
-- **`MessageRequest`** - Multi-turn conversation request
-- **`TextResponse`** - LLM response with metadata
-- **`Message`** - Conversation message
-- **`StreamChunk`** - Streaming response chunk
-
-### Request Parameters
+### TextRequest Parameters
 
 | Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
+|---|---|---|---|
 | `prompt` | str | Input text prompt | Required |
-| `model` | str | Model ID to use | Config default |
-| `temperature` | float | Sampling temperature (0-1) | 0 |
+| `model` | str | Model ID | Config default |
+| `temperature` | float | Sampling temperature (0–1) | 0 |
 | `max_tokens` | int | Maximum output tokens | 2048 |
 | `top_p` | float | Nucleus sampling | 1.0 |
 | `system_prompt` | str | System context | None |
@@ -360,117 +204,76 @@ async with BedrockLLMClient(bedrock_config) as client:
 | `response_format` | BaseModel | Pydantic model for structured output | None |
 | `use_cache` | bool | Enable caching | True |
 | `clear_cache` | bool | Clear cache before request | False |
-| `api_type` | str | OpenAI API type (`"responses"` or `"chat_completions"`) | `"responses"` |
-| `reasoning_effort` | str | Reasoning effort (`"low"`, `"medium"`, `"high"`) | None |
+| `api_type` | str | `"responses"` or `"chat_completions"` | `"responses"` |
+| `reasoning_effort` | str | `"low"`, `"medium"`, or `"high"` | None |
 | `on_progress` | Callable | Progress event callback (sync or async) | None |
 
-## Error Handling
+### TextResponse Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `text` | str | Generated text |
+| `model` | str | Model that generated the response |
+| `stop_reason` | str | Reason generation stopped |
+| `input_tokens` | int | Input token count |
+| `output_tokens` | int | Output token count |
+| `reasoning_tokens` | int | Reasoning tokens used (OpenAI only, `0` otherwise) |
+| `cached_tokens` | int | Prompt cache tokens (OpenAI only, `0` otherwise) |
+| `timestamp` | str \| None | ISO 8601 UTC timestamp of the original API call |
+| `elapsed_seconds` | float \| None | Duration of the original API call in seconds |
+| `metadata` | dict | Request context: `prompt`/`messages` and `response_format` JSON schema |
+| `structured_data` | BaseModel \| None | Parsed Pydantic object (when `response_format` was set) |
+| `cache_source` | str | `"miss"`, `"l1"` (local), or `"l2"` (DynamoDB) |
+| `cache_key` | str \| None | Cache key for this request |
+
+## Caching
+
+Responses are cached automatically when `temperature=0` or when using a reasoning model. Streaming responses are never cached.
+
+**Cache key** is derived from: `model`, `prompt` (or `messages`), `max_tokens`, `top_p`, `system_prompt`, `response_format`, `api_type`, `reasoning_effort`.
+
+**What is stored:**
+
+| Field | Description |
+|---|---|
+| `text` | Raw response text |
+| `model` | Model used |
+| `stop_reason` | Stop reason |
+| `input_tokens` | Input token count |
+| `output_tokens` | Output token count |
+| `reasoning_tokens` | Reasoning token count |
+| `cached_tokens` | Prompt cache token count |
+| `timestamp` | ISO 8601 UTC timestamp of the original API call |
+| `elapsed_seconds` | Duration of the original API call in seconds |
+| `metadata.prompt` | Original prompt (or `messages`) |
+| `metadata.response_format` | JSON schema of requested output format |
+| `structured_data` | Parsed Pydantic object (as dict) |
+
+`timestamp` and `elapsed_seconds` are stored and restored on cache hits — they reflect when the original API call was made and how long it took.
 
 ```python
-from smartllm import LLMClient, TextRequest
+response1 = await client.generate_text(TextRequest(prompt="What is 2+2?", temperature=0))
+print(response1.cache_source)  # "miss"
 
-async with LLMClient(provider="openai") as client:
-    try:
-        response = await client.generate_text(
-            TextRequest(prompt="Hello")
-        )
-    except ValueError as e:
-        print(f"Configuration error: {e}")
-    except Exception as e:
-        print(f"API error: {e}")
+response2 = await client.generate_text(TextRequest(prompt="What is 2+2?", temperature=0))
+print(response2.cache_source)  # "l1" or "l2"
+
+# Force refresh
+response3 = await client.generate_text(TextRequest(prompt="What is 2+2?", temperature=0, clear_cache=True))
 ```
 
 ## Development
-
-### Setup
 
 ```bash
 git clone https://github.com/Redundando/smartllm.git
 cd smartllm
 pip install -e .[all,dev]
-```
 
-### Running Tests
-
-```bash
-# Unit tests
 pytest tests/unit/ -v
-
-# Integration tests (select model interactively)
-pytest tests/integration/
-
-# Integration tests with a specific model
 pytest tests/integration/ --model gpt-4o
-
-# Integration tests with a reasoning model
-pytest tests/integration/ --model gpt-5.2
 ```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Changelog
-
-### Version 0.1.6
-- Added `on_progress` callback to `TextRequest` and `MessageRequest`
-- Events: `llm_started`, `llm_done`, `cache_hit` (with `cache_source`), `error`
-- Both sync and async callables supported
-- `cache_source` on `TextResponse` indicates cache origin: `"miss"`, `"l1"`, or `"l2"`
-
-### Version 0.1.5
-- Replaced custom logging with [Logorator](https://pypi.org/project/logorator/) decorator-based logging
-- Added two-level cache: local JSON files + optional DynamoDB via [Dynamorator](https://pypi.org/project/dynamorator/)
-- DynamoDB cache configurable via `dynamo_table_name` and `cache_ttl_days` (default: 365 days)
-- Cache write-back: DynamoDB hits are written to local cache automatically
-- Prompt stored in cache metadata
-- Recursive Pydantic schema cleaning for OpenAI structured output compatibility
-- `logorator` and `dynamorator` added as core dependencies in `pyproject.toml`
-
-### Version 0.1.4
-- Fixed logger name from `aws_llm_wrapper` to `smartllm`
-- Removed redundant `response_format=json_object` when using tool-based structured output
-- Cache read failures now log a warning instead of silently returning `None`
-- Added `reasoning_effort` warning when used with Bedrock models
-- Test suite now supports model selection via `--model` CLI option or interactive prompt
-- Integration tests support both OpenAI and AWS Bedrock models
-- Bedrock streaming chunk parsing fixed for Claude models
-
-### Version 0.1.0
-- Initial public release
-- Unified interface for multiple providers
-- OpenAI support (GPT models)
-- AWS Bedrock support (Claude, Llama, Mistral, Titan)
-- Async/await architecture
-- Smart caching with temperature=0
-- Auto retry with exponential backoff
-- Structured output with Pydantic models
-- Streaming responses
-- Rate limiting and concurrency control
-- OpenAI Response API support (primary interface)
-- Reasoning model support with `reasoning_effort` parameter
-- Comprehensive test suite
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/Redundando/smartllm/issues)
-- **Email**: arved.kloehn@gmail.com
-
-## Acknowledgments
-
-Built with:
-- [Pydantic](https://pydantic.dev/) for data validation
-- [Logorator](https://pypi.org/project/logorator/) for decorator-based logging
-- [Dynamorator](https://pypi.org/project/dynamorator/) for DynamoDB caching
-- [aioboto3](https://github.com/terrycain/aioboto3) for AWS async support
-- [OpenAI Python SDK](https://github.com/openai/openai-python) for OpenAI integration
+MIT — see [LICENSE](LICENSE).  
+Issues: [GitHub Issues](https://github.com/Redundando/smartllm/issues)

@@ -88,8 +88,7 @@ async def test_reasoning_effort(client_config):
 
         assert response.text
         assert "2" in response.text  # Answer is 2 hours
-        assert "reasoning_tokens" in response.metadata
-        assert response.metadata["reasoning_tokens"] > 0
+        assert response.reasoning_tokens > 0
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ async def test_cache_hit_skips_api_call(openai_config, mock_openai_response):
         model=UNIT_MODEL,
         prompt="test",
         max_tokens=100,
+        top_p=None,
         instructions=None,
         reasoning_effort=None,
         response_format=None
@@ -41,6 +42,8 @@ async def test_cache_hit_skips_api_call(openai_config, mock_openai_response):
         "stop_reason": "stop",
         "input_tokens": 5,
         "output_tokens": 3,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
         "metadata": {},
         "structured_data": None,
     })
@@ -67,12 +70,13 @@ async def test_clear_cache_flag(openai_config):
         model=UNIT_MODEL,
         prompt="test",
         max_tokens=100,
+        top_p=None,
         instructions=None,
         reasoning_effort=None,
         response_format=None
     )
     client._client.cache.set(cache_key, {"text": "cached"})
-    assert client._client.cache.get(cache_key) is not None
+    assert client._client.cache.get(cache_key) != (None, "miss")
 
     with patch.object(client._client, '_invoke_with_retry', new_callable=AsyncMock):
         with patch.object(client._client, '_init_client', new_callable=AsyncMock):
@@ -84,7 +88,7 @@ async def test_clear_cache_flag(openai_config):
             except:
                 pass
 
-    assert client._client.cache.get(cache_key) is None
+    assert client._client.cache.get(cache_key) == (None, "miss")
 
 
 @pytest.mark.asyncio

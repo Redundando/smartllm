@@ -1,6 +1,8 @@
 """OpenAI Chat Completions API implementation"""
 
 import json
+import time
+from datetime import datetime, timezone
 from typing import Optional, Type, Dict, Any, AsyncIterator
 from pydantic import BaseModel
 from logorator import Logger
@@ -75,13 +77,20 @@ class ChatCompletionsAPI:
             params["tool_choice"] = {"type": "function", "function": {"name": params["tools"][0]["function"]["name"]}}
         
         try:
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
             if self.semaphore:
                 async with self.semaphore:
                     response = await invoke_with_retry(self.client.chat.completions.create, **params)
             else:
                 response = await invoke_with_retry(self.client.chat.completions.create, **params)
+            elapsed = round(time.monotonic() - t0, 3)
             
             result = self._parse_response(response, model, request.response_format)
+            result.timestamp = started_at
+            result.elapsed_seconds = elapsed
+            result.metadata["prompt"] = request.prompt
+            result.metadata["response_format"] = request.response_format.model_json_schema() if request.response_format else None
             Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
             if cache_key:
@@ -167,13 +176,20 @@ class ChatCompletionsAPI:
             params["tool_choice"] = {"type": "function", "function": {"name": params["tools"][0]["function"]["name"]}}
         
         try:
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
             if self.semaphore:
                 async with self.semaphore:
                     response = await invoke_with_retry(self.client.chat.completions.create, **params)
             else:
                 response = await invoke_with_retry(self.client.chat.completions.create, **params)
+            elapsed = round(time.monotonic() - t0, 3)
             
             result = self._parse_response(response, model, request.response_format)
+            result.timestamp = started_at
+            result.elapsed_seconds = elapsed
+            result.metadata["messages"] = [{"role": m.role, "content": m.content} for m in request.messages]
+            result.metadata["response_format"] = request.response_format.model_json_schema() if request.response_format else None
             Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
             
             if cache_key:
@@ -251,6 +267,10 @@ class ChatCompletionsAPI:
             "stop_reason": response.stop_reason,
             "input_tokens": response.input_tokens,
             "output_tokens": response.output_tokens,
+            "reasoning_tokens": response.reasoning_tokens,
+            "cached_tokens": response.cached_tokens,
+            "timestamp": response.timestamp,
+            "elapsed_seconds": response.elapsed_seconds,
             "metadata": response.metadata,
             "structured_data": response.structured_data.model_dump() if response.structured_data else None,
         }
@@ -267,6 +287,10 @@ class ChatCompletionsAPI:
             stop_reason=data["stop_reason"],
             input_tokens=data["input_tokens"],
             output_tokens=data["output_tokens"],
+            reasoning_tokens=data.get("reasoning_tokens", 0),
+            cached_tokens=data.get("cached_tokens", 0),
+            timestamp=data.get("timestamp"),
+            elapsed_seconds=data.get("elapsed_seconds"),
             metadata=data.get("metadata", {}),
             structured_data=structured_data,
         )

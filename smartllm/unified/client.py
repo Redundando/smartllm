@@ -83,10 +83,11 @@ class LLMClient:
         await _fire(cb, {"event": "llm_started", "ts": time.time(), **base})
         try:
             result = await self._client.generate_text(request)
+            tokens = {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens, "reasoning_tokens": result.reasoning_tokens, "cached_tokens": result.cached_tokens}
             if result.cache_source != "miss":
-                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, "cache_key": result.cache_key, **base})
+                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, "cache_key": result.cache_key, **tokens, **base})
             else:
-                await _fire(cb, {"event": "llm_done", "ts": time.time(), **base})
+                await _fire(cb, {"event": "llm_done", "ts": time.time(), **tokens, **base})
             return result
         except Exception as e:
             await _fire(cb, {"event": "error", "ts": time.time(), "message": str(e), **base})
@@ -113,10 +114,11 @@ class LLMClient:
         await _fire(cb, {"event": "llm_started", "ts": time.time(), **base})
         try:
             result = await self._client.send_message(request)
+            tokens = {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens, "reasoning_tokens": result.reasoning_tokens, "cached_tokens": result.cached_tokens}
             if result.cache_source != "miss":
-                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, "cache_key": result.cache_key, **base})
+                await _fire(cb, {"event": "cache_hit", "ts": time.time(), "cache_source": result.cache_source, "cache_key": result.cache_key, **tokens, **base})
             else:
-                await _fire(cb, {"event": "llm_done", "ts": time.time(), **base})
+                await _fire(cb, {"event": "llm_done", "ts": time.time(), **tokens, **base})
             return result
         except Exception as e:
             await _fire(cb, {"event": "error", "ts": time.time(), "message": str(e), **base})

@@ -164,7 +164,7 @@ response = await client.generate_text(
 )
 ```
 
-Events: `llm_started`, `llm_done`, `cache_hit` (with `cache_source`, `cache_key`), `error` (with `message`). Each event dict includes `event`, `ts`, `prompt`, `model`, `provider`.
+Events: `llm_started`, `llm_done`, `cache_hit` (with `cache_source`, `cache_key`), `error` (with `message`). Each event dict includes `event`, `ts`, `prompt`, `model`, `provider`. `llm_done` and `cache_hit` also include `input_tokens`, `output_tokens`, `reasoning_tokens`, `cached_tokens`.
 
 ### DynamoDB Caching
 

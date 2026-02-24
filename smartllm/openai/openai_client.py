@@ -71,6 +71,9 @@ class OpenAILLMClient:
         except Exception:
             return []
 
+    def __str__(self):
+        return f"OpenAILLMClient(default={self.config.default_model})"
+
     async def __aenter__(self):
         """Async context manager entry"""
         await self._init_client()

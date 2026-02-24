@@ -131,7 +131,7 @@ class BedrockLLMClient:
         return [m.get("modelId") for m in models if isinstance(m, dict) and m.get("modelId")]
 
     def __str__(self):
-        return f"BedrockLLMClient({self.config.default_model})"
+        return f"BedrockLLMClient(default={self.config.default_model})"
 
     @Logger(exclude_args=[])
     async def generate_text(self, request: TextRequest) -> TextResponse:

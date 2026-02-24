@@ -1,5 +1,9 @@
 # Changelog
 
+### Version 0.1.8
+- Fixed `BedrockLLMClient.__str__` to label the config default model as `default=` to avoid implying it reflects the per-request model
+- Added `OpenAILLMClient.__str__` returning `OpenAILLMClient(default=<model>)` for consistency
+
 ### Version 0.1.7
 - `reasoning_tokens` and `cached_tokens` promoted to top-level `TextResponse` fields
 - `timestamp` (ISO 8601 UTC) and `elapsed_seconds` added to `TextResponse`

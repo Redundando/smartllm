@@ -1,5 +1,11 @@
 # Changelog
 
+### Version 0.1.10
+- Cache `data` no longer duplicates `prompt`/`messages`/`response_format` — these are stored only in the top-level `metadata`, reducing storage size
+
+### Version 0.1.9
+- *(no changes logged)*
+
 ### Version 0.1.8
 - Fixed `BedrockLLMClient.__str__` to label the config default model as `default=` to avoid implying it reflects the per-request model
 - Added `OpenAILLMClient.__str__` returning `OpenAILLMClient(default=<model>)` for consistency

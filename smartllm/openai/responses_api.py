@@ -56,7 +56,7 @@ class ResponsesAPI:
             cached, cache_source = self.cache.get(cache_key)
             if cached:
                 Logger.note(f"Cache hit [{cache_key[:8]}] - {model}")
-                result = self._deserialize_response(cached["data"], request.response_format)
+                result = self._deserialize_response(cached["data"], request.response_format, cached.get("metadata", {}))
                 result.cache_source = cache_source
                 result.cache_key = cache_key
                 return result
@@ -193,11 +193,10 @@ class ResponsesAPI:
             "cached_tokens": response.cached_tokens,
             "timestamp": response.timestamp,
             "elapsed_seconds": response.elapsed_seconds,
-            "metadata": response.metadata,
             "structured_data": response.structured_data.model_dump() if response.structured_data else None,
         }
     
-    def _deserialize_response(self, data: Dict[str, Any], response_format: Optional[Type[BaseModel]] = None) -> TextResponse:
+    def _deserialize_response(self, data: Dict[str, Any], response_format: Optional[Type[BaseModel]] = None, metadata: Optional[Dict[str, Any]] = None) -> TextResponse:
         """Deserialize cached data back to TextResponse"""
         structured_data = None
         if data.get("structured_data") and response_format:
@@ -213,6 +212,6 @@ class ResponsesAPI:
             cached_tokens=data.get("cached_tokens", 0),
             timestamp=data.get("timestamp"),
             elapsed_seconds=data.get("elapsed_seconds"),
-            metadata=data.get("metadata", {}),
+            metadata=metadata or {},
             structured_data=structured_data,
         )

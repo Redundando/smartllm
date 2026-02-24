@@ -245,7 +245,7 @@ Responses are cached automatically when `temperature=0` or when using a reasonin
 | `cached_tokens` | Prompt cache token count |
 | `timestamp` | ISO 8601 UTC timestamp of the original API call |
 | `elapsed_seconds` | Duration of the original API call in seconds |
-| `metadata.prompt` | Original prompt (or `messages`) |
+| `metadata.prompt` | Original prompt (or `messages`) — stored in top-level cache metadata, not duplicated in data |
 | `metadata.response_format` | JSON schema of requested output format |
 | `structured_data` | Parsed Pydantic object (as dict) |
 

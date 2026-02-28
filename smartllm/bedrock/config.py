@@ -2,6 +2,8 @@
 
 import os
 from typing import Optional
+import boto3
+from botocore.exceptions import NoCredentialsError
 from ..defaults import (
     DEFAULT_TEMPERATURE,
     DEFAULT_MAX_TOKENS,
@@ -83,11 +85,15 @@ class BedrockConfig:
             ValueError: If required credentials are missing
         """
         if not self.aws_access_key_id or not self.aws_secret_access_key:
-            raise ValueError(
-                "AWS credentials not found. Please provide them via:\n"
-                "1. Environment variables: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY\n"
-                "2. Constructor arguments: BedrockConfig(aws_access_key_id='...', aws_secret_access_key='...')"
-            )
+            try:
+                boto3.Session(region_name=self.aws_region).get_credentials().get_frozen_credentials()
+            except (NoCredentialsError, AttributeError):
+                raise ValueError(
+                    "AWS credentials not found. Please provide them via:\n"
+                    "1. Environment variables: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY\n"
+                    "2. Constructor arguments: BedrockConfig(aws_access_key_id='...', aws_secret_access_key='...')\n"
+                    "3. An IAM role attached to your EC2/ECS/Lambda environment"
+                )
         return True
 
     def get_credentials(self) -> dict:
@@ -97,11 +103,11 @@ class BedrockConfig:
             Dictionary with AWS credentials (region_name, aws_access_key_id, 
             aws_secret_access_key, and optionally aws_session_token)
         """
-        creds = {
-            "region_name": self.aws_region,
-            "aws_access_key_id": self.aws_access_key_id,
-            "aws_secret_access_key": self.aws_secret_access_key,
-        }
+        creds = {"region_name": self.aws_region}
+        if self.aws_access_key_id:
+            creds["aws_access_key_id"] = self.aws_access_key_id
+        if self.aws_secret_access_key:
+            creds["aws_secret_access_key"] = self.aws_secret_access_key
         if self.aws_session_token:
             creds["aws_session_token"] = self.aws_session_token
         return creds

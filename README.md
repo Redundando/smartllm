@@ -59,6 +59,8 @@ export AWS_REGION="us-east-1"
 export BEDROCK_MODEL="anthropic.claude-3-sonnet-20240229-v1:0"  # optional
 ```
 
+Explicit credentials are optional. If omitted, boto3's default credential chain is used — including EC2 instance profiles, ECS task roles, Lambda execution roles, and `~/.aws/credentials`.
+
 ### Programmatic Configuration
 
 ```python

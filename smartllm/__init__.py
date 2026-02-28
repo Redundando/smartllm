@@ -29,7 +29,7 @@ from . import defaults
 # Advanced users can import: from smartllm.bedrock import BedrockLLMClient
 # Advanced users can import: from smartllm.openai import OpenAILLMClient
 
-__version__ = "0.1.12"
+__version__ = "0.1.13"
 __author__ = "Arved Klöhn"
 
 __all__ = [

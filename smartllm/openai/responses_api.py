@@ -152,9 +152,11 @@ class ResponsesAPI:
         structured_data = None
         
         if response_format and text:
+            if (response.status or "") == "incomplete":
+                raise ValueError("OpenAI truncated structured output (status=incomplete)")
             try:
                 data = json.loads(text)
-                structured_data = response_format(**data)
+                structured_data = response_format.model_validate(data)
             except Exception:
                 pass
         
@@ -200,7 +202,7 @@ class ResponsesAPI:
         """Deserialize cached data back to TextResponse"""
         structured_data = None
         if data.get("structured_data") and response_format:
-            structured_data = response_format(**data["structured_data"])
+            structured_data = response_format.model_validate(data["structured_data"])
         
         return TextResponse(
             text=data["text"],

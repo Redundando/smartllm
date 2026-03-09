@@ -453,18 +453,19 @@ class BedrockLLMClient:
     def _parse_response(self, response_body: Dict[str, Any], model: str, response_format: Optional[Type[BaseModel]] = None) -> TextResponse:
         """Parse response based on model type"""
         if "claude" in model.lower():
+            stop_reason = response_body.get("stop_reason", "")
+            if stop_reason == "max_tokens" and response_format:
+                raise ValueError("Bedrock truncated structured output (stop_reason=max_tokens)")
             # Check for tool use (structured output)
             content = response_body.get("content", [])
             if content and content[0].get("type") == "tool_use" and response_format:
                 tool_input = content[0].get("input", {})
-                structured_data = response_format(**tool_input)
+                structured_data = response_format.model_validate(tool_input)
                 text = json.dumps(tool_input, indent=2)
             else:
                 # Regular text response
                 text = response_body["content"][0]["text"]
                 structured_data = None
-                
-            stop_reason = response_body.get("stop_reason", "")
             input_tokens = response_body.get("usage", {}).get("input_tokens", 0)
             output_tokens = response_body.get("usage", {}).get("output_tokens", 0)
         elif "llama" in model.lower():
@@ -529,7 +530,7 @@ class BedrockLLMClient:
         """Deserialize cached data back to TextResponse"""
         structured_data = None
         if data.get("structured_data") and response_format:
-            structured_data = response_format(**data["structured_data"])
+            structured_data = response_format.model_validate(data["structured_data"])
         
         return TextResponse(
             text=data["text"],

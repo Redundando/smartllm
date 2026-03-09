@@ -228,6 +228,42 @@ async with BedrockLLMClient(BedrockConfig(aws_region="us-east-1")) as client:
 | `cache_source` | str | `"miss"`, `"l1"` (local), or `"l2"` (DynamoDB) |
 | `cache_key` | str \| None | Cache key for this request |
 
+## Structured Output Error Handling
+
+When using `response_format`, two error conditions are raised explicitly:
+
+**Truncated output** — if the provider cuts off the response before the structured output is complete, a `ValueError` is raised:
+
+```python
+try:
+    response = await client.generate_text(
+        TextRequest(prompt="...", response_format=MyModel, max_tokens=100)
+    )
+except ValueError as e:
+    print(e)  # "Bedrock truncated structured output (stop_reason=max_tokens)"
+             # "OpenAI truncated structured output (finish_reason=length)"
+             # "OpenAI truncated structured output (status=incomplete)"
+```
+
+Increase `max_tokens` to avoid this.
+
+**Provider serialization quirks** — Bedrock occasionally returns list fields as JSON strings rather than inline arrays. Pydantic's `model_validate` is used internally to handle coercion where possible. If your model has list fields and you still see `ValidationError`, add a field validator:
+
+```python
+import json
+from pydantic import BaseModel, field_validator
+
+class BookList(BaseModel):
+    books: list[str]
+
+    @field_validator("books", mode="before")
+    @classmethod
+    def parse_json_string(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
+```
+
 ## Caching
 
 Responses are cached automatically when `temperature=0` or when using a reasoning model. Streaming responses are never cached.

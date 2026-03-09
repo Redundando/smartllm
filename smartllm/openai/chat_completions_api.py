@@ -240,11 +240,15 @@ class ChatCompletionsAPI:
         """Parse Chat Completions response"""
         choice = response.choices[0]
         
+        stop_reason = choice.finish_reason or ""
+        
         # Check for tool calls (structured output)
         if choice.message.tool_calls and response_format:
+            if stop_reason == "length":
+                raise ValueError("OpenAI truncated structured output (finish_reason=length)")
             tool_call = choice.message.tool_calls[0]
             tool_input = json.loads(tool_call.function.arguments)
-            structured_data = response_format(**tool_input)
+            structured_data = response_format.model_validate(tool_input)
             text = json.dumps(tool_input, indent=2)
         else:
             text = choice.message.content or ""
@@ -253,7 +257,7 @@ class ChatCompletionsAPI:
         return TextResponse(
             text=text,
             model=model,
-            stop_reason=choice.finish_reason or "",
+            stop_reason=stop_reason,
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             structured_data=structured_data,
@@ -278,7 +282,7 @@ class ChatCompletionsAPI:
         """Deserialize cached data back to TextResponse"""
         structured_data = None
         if data.get("structured_data") and response_format:
-            structured_data = response_format(**data["structured_data"])
+            structured_data = response_format.model_validate(data["structured_data"])
         
         return TextResponse(
             text=data["text"],

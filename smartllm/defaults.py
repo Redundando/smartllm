@@ -22,3 +22,10 @@ BEDROCK_DEFAULT_TOP_K = 250
 
 OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 OPENAI_DEFAULT_TOP_P = 1.0
+
+# Bedrock extended thinking budget mappings (reasoning_effort -> budget_tokens)
+BEDROCK_THINKING_BUDGET = {
+    "low": 1024,
+    "medium": 4096,
+    "high": 16000,
+}

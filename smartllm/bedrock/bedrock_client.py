@@ -15,6 +15,7 @@ from ..models import (
     StreamChunk,
 )
 from ..utils import pydantic_to_tool_schema, TwoLevelCache, retry_on_error
+from ..defaults import BEDROCK_THINKING_BUDGET
 
 # Default Bedrock model quotas for concurrency limiting
 DEFAULT_MODEL_QUOTAS = {
@@ -133,6 +134,24 @@ class BedrockLLMClient:
     def __str__(self):
         return f"BedrockLLMClient(default={self.config.default_model})"
 
+    def _resolve_thinking_budget(self, request: TextRequest) -> Optional[int]:
+        """Resolve the thinking budget from request parameters.
+        
+        Returns budget_tokens if thinking is requested, None otherwise.
+        Priority: budget_tokens > reasoning_effort mapping.
+        """
+        if request.budget_tokens:
+            return max(request.budget_tokens, 1024)  # Minimum 1024 per API requirement
+        if request.reasoning_effort:
+            budget = BEDROCK_THINKING_BUDGET.get(request.reasoning_effort)
+            if budget is None:
+                raise ValueError(
+                    f"Invalid reasoning_effort '{request.reasoning_effort}'. "
+                    f"Must be one of: {', '.join(BEDROCK_THINKING_BUDGET.keys())}"
+                )
+            return budget
+        return None
+
     @Logger(exclude_args=[])
     async def generate_text(self, request: TextRequest) -> TextResponse:
         """Generate text from a prompt"""
@@ -140,12 +159,13 @@ class BedrockLLMClient:
             await self._init_client()
             
         model = request.model or self.config.default_model
+        thinking_budget = self._resolve_thinking_budget(request)
         # If no temperature specified, use 0 (deterministic + cacheable)
         temperature = request.temperature if request.temperature is not None else 0
         
         # Generate cache key for this specific request
         cache_key = None
-        if temperature == 0 and not request.stream:
+        if (temperature == 0 or thinking_budget) and not request.stream:
             cache_key = self._generate_cache_key(
                 model=model,
                 prompt=request.prompt,
@@ -153,7 +173,9 @@ class BedrockLLMClient:
                 top_p=request.top_p,
                 top_k=request.top_k,
                 system_prompt=request.system_prompt,
-                response_format=request.response_format.__name__ if request.response_format else None
+                response_format=request.response_format.__name__ if request.response_format else None,
+                reasoning_effort=request.reasoning_effort,
+                budget_tokens=thinking_budget,
             )
         
         if request.clear_cache and cache_key:
@@ -167,13 +189,50 @@ class BedrockLLMClient:
                 result.cache_source = cache_source
                 result.cache_key = cache_key
                 return result
-        
-        if request.reasoning_effort:
-            Logger.note(f"reasoning_effort='{request.reasoning_effort}' ignored by Bedrock")
 
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
-        Logger.note(f"{model} | temp={temperature} | {prompt_preview}")
+        Logger.note(f"{model} | temp={temperature} | thinking={thinking_budget or 'off'} | {prompt_preview}")
         
+        # Two-pass approach when both thinking and structured output are requested
+        if thinking_budget and request.response_format:
+            result = await self._generate_with_thinking_and_structure(
+                request=request,
+                model=model,
+                temperature=temperature,
+                thinking_budget=thinking_budget,
+            )
+        elif thinking_budget:
+            result = await self._generate_with_thinking(
+                request=request,
+                model=model,
+                thinking_budget=thinking_budget,
+            )
+        else:
+            result = await self._generate_standard(
+                request=request,
+                model=model,
+                temperature=temperature,
+            )
+        
+        if cache_key:
+            cache_metadata = {
+                "prompt": request.prompt,
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "system_prompt": request.system_prompt,
+                "response_format": request.response_format.__name__ if request.response_format else None,
+                "top_p": request.top_p or self.config.top_p,
+                "top_k": request.top_k or self.config.top_k,
+                "reasoning_effort": request.reasoning_effort,
+                "budget_tokens": thinking_budget,
+            }
+            self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
+        result.cache_key = cache_key
+        return result
+
+    async def _generate_standard(self, request: TextRequest, model: str, temperature: float) -> TextResponse:
+        """Standard generation without extended thinking."""
         body = self._build_request_body(
             model=model,
             prompt=request.prompt,
@@ -185,43 +244,148 @@ class BedrockLLMClient:
             response_format=request.response_format,
         )
 
-        try:
-            started_at = datetime.now(timezone.utc).isoformat()
-            t0 = time.monotonic()
-            semaphore = self._get_semaphore(model)
-            async with semaphore:
-                response = await self._invoke_model_with_retry(
-                    modelId=model,
-                    body=json.dumps(body),
-                    contentType="application/json",
-                )
-            elapsed = round(time.monotonic() - t0, 3)
-            
-            response_body = json.loads(await response["body"].read())
-            result = self._parse_response(response_body, model, request.response_format)
-            result.timestamp = started_at
-            result.elapsed_seconds = elapsed
-            result.metadata["prompt"] = request.prompt
-            result.metadata["response_format"] = request.response_format.model_json_schema() if request.response_format else None
-            Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
-            
-            if cache_key:
-                cache_metadata = {
-                    "prompt": request.prompt,
-                    "model": model,
-                    "temperature": temperature,
-                    "max_tokens": request.max_tokens or self.config.max_tokens,
-                    "system_prompt": request.system_prompt,
-                    "response_format": request.response_format.__name__ if request.response_format else None,
-                    "top_p": request.top_p or self.config.top_p,
-                    "top_k": request.top_k or self.config.top_k,
-                }
-                self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
-            result.cache_key = cache_key
-            return result
-            
-        except Exception:
-            raise
+        started_at = datetime.now(timezone.utc).isoformat()
+        t0 = time.monotonic()
+        semaphore = self._get_semaphore(model)
+        async with semaphore:
+            response = await self._invoke_model_with_retry(
+                modelId=model,
+                body=json.dumps(body),
+                contentType="application/json",
+            )
+        elapsed = round(time.monotonic() - t0, 3)
+        
+        response_body = json.loads(await response["body"].read())
+        result = self._parse_response(response_body, model, request.response_format)
+        result.timestamp = started_at
+        result.elapsed_seconds = elapsed
+        result.metadata["prompt"] = request.prompt
+        result.metadata["response_format"] = request.response_format.model_json_schema() if request.response_format else None
+        Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
+        return result
+
+    async def _generate_with_thinking(self, request: TextRequest, model: str, thinking_budget: int) -> TextResponse:
+        """Generation with extended thinking, no structured output."""
+        max_tokens = request.max_tokens or self.config.max_tokens
+        # budget_tokens must be less than max_tokens
+        if thinking_budget >= max_tokens:
+            max_tokens = thinking_budget + 4096
+
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "messages": [{"role": "user", "content": request.prompt}],
+            "max_tokens": max_tokens,
+            "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
+        }
+        if request.system_prompt:
+            body["system"] = request.system_prompt
+
+        started_at = datetime.now(timezone.utc).isoformat()
+        t0 = time.monotonic()
+        semaphore = self._get_semaphore(model)
+        async with semaphore:
+            response = await self._invoke_model_with_retry(
+                modelId=model,
+                body=json.dumps(body),
+                contentType="application/json",
+            )
+        elapsed = round(time.monotonic() - t0, 3)
+
+        response_body = json.loads(await response["body"].read())
+        result = self._parse_thinking_response(response_body, model)
+        result.timestamp = started_at
+        result.elapsed_seconds = elapsed
+        result.metadata["prompt"] = request.prompt
+        Logger.note(f"{result.input_tokens} in / {result.output_tokens} out (thinking={result.reasoning_tokens}) | {result.text[:50]}")
+        return result
+
+    async def _generate_with_thinking_and_structure(
+        self, request: TextRequest, model: str, temperature: float, thinking_budget: int
+    ) -> TextResponse:
+        """Two-pass: thinking first, then structured extraction.
+        
+        Pass 1: Extended thinking to reason through the prompt.
+        Pass 2: Forced tool use to extract structured output from pass 1 result.
+        """
+        # --- Pass 1: Think ---
+        max_tokens = request.max_tokens or self.config.max_tokens
+        if thinking_budget >= max_tokens:
+            max_tokens = thinking_budget + 4096
+
+        body_pass1 = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "messages": [{"role": "user", "content": request.prompt}],
+            "max_tokens": max_tokens,
+            "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
+        }
+        if request.system_prompt:
+            body_pass1["system"] = request.system_prompt
+
+        started_at = datetime.now(timezone.utc).isoformat()
+        t0 = time.monotonic()
+        semaphore = self._get_semaphore(model)
+        async with semaphore:
+            response1 = await self._invoke_model_with_retry(
+                modelId=model,
+                body=json.dumps(body_pass1),
+                contentType="application/json",
+            )
+
+        response_body1 = json.loads(await response1["body"].read())
+        pass1_result = self._parse_thinking_response(response_body1, model)
+        Logger.note(f"Pass 1 (thinking): {pass1_result.input_tokens} in / {pass1_result.output_tokens} out (thinking={pass1_result.reasoning_tokens})")
+
+        # --- Pass 2: Structure extraction ---
+        tool_schema = pydantic_to_tool_schema(request.response_format)
+        extraction_prompt = (
+            "Extract the content from the following text into the required structured format. "
+            "Map the information to the schema fields as accurately as possible. "
+            "Do not add, invent, or omit any information — use only what is provided.\n\n"
+            f"---\n{pass1_result.text}\n---"
+        )
+
+        body_pass2 = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "messages": [{"role": "user", "content": extraction_prompt}],
+            "max_tokens": request.max_tokens or self.config.max_tokens,
+            "temperature": 0,
+            "tools": [tool_schema],
+            "tool_choice": {"type": "tool", "name": tool_schema["name"]},
+        }
+
+        async with semaphore:
+            response2 = await self._invoke_model_with_retry(
+                modelId=model,
+                body=json.dumps(body_pass2),
+                contentType="application/json",
+            )
+        elapsed = round(time.monotonic() - t0, 3)
+
+        response_body2 = json.loads(await response2["body"].read())
+        pass2_result = self._parse_response(response_body2, model, request.response_format)
+        Logger.note(f"Pass 2 (structure): {pass2_result.input_tokens} in / {pass2_result.output_tokens} out")
+
+        # Combine results
+        total_input = pass1_result.input_tokens + pass2_result.input_tokens
+        total_output = pass1_result.output_tokens + pass2_result.output_tokens
+
+        return TextResponse(
+            text=pass1_result.text,
+            model=model,
+            stop_reason=pass2_result.stop_reason,
+            input_tokens=total_input,
+            output_tokens=total_output,
+            reasoning_tokens=pass1_result.reasoning_tokens,
+            timestamp=started_at,
+            elapsed_seconds=elapsed,
+            metadata={
+                "prompt": request.prompt,
+                "response_format": request.response_format.model_json_schema(),
+                "pass1_tokens": {"input": pass1_result.input_tokens, "output": pass1_result.output_tokens},
+                "pass2_tokens": {"input": pass2_result.input_tokens, "output": pass2_result.output_tokens},
+            },
+            structured_data=pass2_result.structured_data,
+        )
 
     async def generate_text_stream(self, request: TextRequest) -> AsyncIterator[StreamChunk]:
         """Stream text generation
@@ -230,21 +394,37 @@ class BedrockLLMClient:
             request: TextRequest with prompt and parameters
             
         Yields:
-            StreamChunk objects with partial text
+            StreamChunk objects with partial text. Thinking chunks have
+            metadata["type"] = "thinking".
         """
         if not self.client:
             await self._init_client()
             
         model = request.model or self.config.default_model
-        
-        body = self._build_request_body(
-            model=model,
-            prompt=request.prompt,
-            temperature=request.temperature or self.config.temperature,
-            max_tokens=request.max_tokens or self.config.max_tokens,
-            top_p=request.top_p or self.config.top_p,
-            top_k=request.top_k or self.config.top_k,
-        )
+        thinking_budget = self._resolve_thinking_budget(request)
+
+        if thinking_budget:
+            max_tokens = request.max_tokens or self.config.max_tokens
+            if thinking_budget >= max_tokens:
+                max_tokens = thinking_budget + 4096
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "messages": [{"role": "user", "content": request.prompt}],
+                "max_tokens": max_tokens,
+                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
+            }
+            if request.system_prompt:
+                body["system"] = request.system_prompt
+        else:
+            body = self._build_request_body(
+                model=model,
+                prompt=request.prompt,
+                temperature=request.temperature or self.config.temperature,
+                max_tokens=request.max_tokens or self.config.max_tokens,
+                top_p=request.top_p or self.config.top_p,
+                top_k=request.top_k or self.config.top_k,
+                system_prompt=request.system_prompt,
+            )
 
         try:
             response = await self.client.invoke_model_with_response_stream(
@@ -256,6 +436,20 @@ class BedrockLLMClient:
             async for event in response["body"]:
                 if "chunk" in event:
                     chunk_data = json.loads(event["chunk"]["bytes"])
+                    # Handle thinking deltas
+                    if chunk_data.get("type") == "content_block_delta":
+                        delta = chunk_data.get("delta", {})
+                        if delta.get("type") == "thinking_delta":
+                            thinking_text = delta.get("thinking", "")
+                            if thinking_text:
+                                yield StreamChunk(text=thinking_text, model=model, metadata={"type": "thinking"})
+                            continue
+                        elif delta.get("type") == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                yield StreamChunk(text=text, model=model)
+                            continue
+                    # Fallback for non-thinking responses
                     text = self._extract_text_from_chunk(chunk_data, model)
                     if text:
                         yield StreamChunk(text=text, model=model)
@@ -495,6 +689,38 @@ class BedrockLLMClient:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             structured_data=structured_data,
+        )
+
+    def _parse_thinking_response(self, response_body: Dict[str, Any], model: str) -> TextResponse:
+        """Parse a response that contains thinking blocks (extended thinking enabled)."""
+        content = response_body.get("content", [])
+        thinking_text = ""
+        answer_text = ""
+
+        for block in content:
+            block_type = block.get("type", "")
+            if block_type == "thinking":
+                thinking_text += block.get("thinking", "")
+            elif block_type == "text":
+                answer_text += block.get("text", "")
+
+        usage = response_body.get("usage", {})
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+
+        # Reasoning tokens: total output minus the text output approximation
+        # The API doesn't separate them explicitly, so we report total output tokens
+        # and store thinking text in metadata for transparency
+        reasoning_tokens = output_tokens  # All output includes thinking in the count
+
+        return TextResponse(
+            text=answer_text,
+            model=model,
+            stop_reason=response_body.get("stop_reason", ""),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            metadata={"thinking": thinking_text},
         )
 
     def _extract_text_from_chunk(self, chunk_data: Dict[str, Any], model: str) -> str:

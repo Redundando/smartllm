@@ -36,6 +36,7 @@ class TextRequest:
     clear_cache: bool = False
     api_type: str = "responses"
     reasoning_effort: Optional[str] = None  # "low", "medium", "high" - reasoning models only
+    budget_tokens: Optional[int] = None  # Explicit thinking budget (Bedrock/Claude). Overrides reasoning_effort mapping.
     on_progress: Optional[Callable] = None
 
     def __str__(self):

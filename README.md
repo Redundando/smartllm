@@ -15,6 +15,7 @@ A unified async Python wrapper for multiple LLM providers with a consistent inte
 - **Streaming** — Real-time streaming responses
 - **Rate Limiting** — Built-in concurrency control per model
 - **Reasoning Models** — Full support including `reasoning_effort` and `reasoning_tokens`
+- **Extended Thinking (Bedrock)** — Claude extended thinking with two-pass structured output
 - **Progress Callbacks** — Optional `on_progress` for real-time events
 
 ## Installation
@@ -138,6 +139,83 @@ print(f"Reasoning tokens: {response.reasoning_tokens}")
 
 Note: reasoning models do not support `temperature`. Passing a value other than `1` raises `ValueError`.
 
+### Extended Thinking (Bedrock/Claude)
+
+Claude models on Bedrock support extended thinking, giving the model a token budget to reason step-by-step before answering.
+
+```python
+async with LLMClient(provider="bedrock") as client:
+    # Using reasoning_effort (maps to budget: low=1024, medium=4096, high=16000)
+    response = await client.generate_text(
+        TextRequest(
+            prompt="Analyze the tradeoffs of event sourcing vs CRUD.",
+            model="eu.anthropic.claude-sonnet-4-6",
+            reasoning_effort="high",
+        )
+    )
+    print(response.text)
+    print(f"Reasoning tokens: {response.reasoning_tokens}")
+    print(f"Thinking: {response.metadata.get('thinking', '')[:200]}")
+```
+
+For precise control, use `budget_tokens` directly (overrides `reasoning_effort`):
+
+```python
+response = await client.generate_text(
+    TextRequest(
+        prompt="Solve this step by step...",
+        model="eu.anthropic.claude-sonnet-4-6",
+        budget_tokens=8192,  # Explicit token budget (minimum 1024)
+    )
+)
+```
+
+#### Extended Thinking + Structured Output
+
+When both `reasoning_effort` (or `budget_tokens`) and `response_format` are set, SmartLLM uses a two-pass approach:
+
+1. **Pass 1** — Sends the prompt with extended thinking enabled. Claude reasons through the problem and produces a text answer.
+2. **Pass 2** — Sends the text answer to a second call with forced tool use to extract it into the Pydantic model.
+
+```python
+from pydantic import BaseModel
+from typing import List
+
+class Analysis(BaseModel):
+    topic: str
+    pros: List[str]
+    cons: List[str]
+    recommendation: str
+
+response = await client.generate_text(
+    TextRequest(
+        prompt="Should we use microservices or a monolith?",
+        model="eu.anthropic.claude-sonnet-4-6",
+        reasoning_effort="medium",
+        response_format=Analysis,
+    )
+)
+print(response.structured_data.recommendation)
+print(response.metadata["pass1_tokens"])  # {"input": ..., "output": ...}
+print(response.metadata["pass2_tokens"])  # {"input": ..., "output": ...}
+```
+
+The two-pass approach is needed because Claude's extended thinking is incompatible with forced tool use (`tool_choice: {"type": "tool"}`). The result is cached as a single entry — on cache hit, both passes are skipped.
+
+#### Streaming with Extended Thinking
+
+When streaming with thinking enabled, thinking chunks are yielded with `metadata={"type": "thinking"}`:
+
+```python
+async for chunk in client.generate_text_stream(
+    TextRequest(prompt="Explain quantum entanglement.", reasoning_effort="medium", stream=True)
+):
+    if chunk.metadata.get("type") == "thinking":
+        print(f"[thinking] {chunk.text}", end="")
+    else:
+        print(chunk.text, end="")
+```
+
 ### OpenAI API Types
 
 ```python
@@ -208,6 +286,7 @@ async with BedrockLLMClient(BedrockConfig(aws_region="us-east-1")) as client:
 | `clear_cache` | bool | Clear cache before request | False |
 | `api_type` | str | `"responses"` or `"chat_completions"` | `"responses"` |
 | `reasoning_effort` | str | `"low"`, `"medium"`, or `"high"` | None |
+| `budget_tokens` | int | Explicit thinking budget in tokens (Bedrock/Claude). Overrides `reasoning_effort` mapping. Minimum 1024. | None |
 | `on_progress` | Callable | Progress event callback (sync or async) | None |
 
 ### TextResponse Fields
@@ -219,7 +298,7 @@ async with BedrockLLMClient(BedrockConfig(aws_region="us-east-1")) as client:
 | `stop_reason` | str | Reason generation stopped |
 | `input_tokens` | int | Input token count |
 | `output_tokens` | int | Output token count |
-| `reasoning_tokens` | int | Reasoning tokens used (OpenAI only, `0` otherwise) |
+| `reasoning_tokens` | int | Reasoning/thinking tokens used (OpenAI reasoning models and Bedrock extended thinking) |
 | `cached_tokens` | int | Prompt cache tokens (OpenAI only, `0` otherwise) |
 | `timestamp` | str \| None | ISO 8601 UTC timestamp of the original API call |
 | `elapsed_seconds` | float \| None | Duration of the original API call in seconds |
@@ -266,9 +345,9 @@ class BookList(BaseModel):
 
 ## Caching
 
-Responses are cached automatically when `temperature=0` or when using a reasoning model. Streaming responses are never cached.
+Responses are cached automatically when `temperature=0`, when using a reasoning model, or when extended thinking is enabled. Streaming responses are never cached.
 
-**Cache key** is derived from: `model`, `prompt` (or `messages`), `max_tokens`, `top_p`, `system_prompt`, `response_format`, `api_type`, `reasoning_effort`.
+**Cache key** is derived from: `model`, `prompt` (or `messages`), `max_tokens`, `top_p`, `system_prompt`, `response_format`, `api_type`, `reasoning_effort`, `budget_tokens`.
 
 **What is stored:**
 

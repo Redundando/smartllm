@@ -40,10 +40,22 @@ class OpenAILLMClient:
         """Initialize OpenAI async client"""
         try:
             from openai import AsyncOpenAI
+            import httpx
+
+            # Match httpx connection pool to concurrency limit to avoid HTTP-layer bottleneck
+            pool_size = self._max_concurrent or 100
+            http_client = httpx.AsyncClient(
+                limits=httpx.Limits(
+                    max_connections=pool_size,
+                    max_keepalive_connections=pool_size,
+                ),
+            )
+
             self.client = AsyncOpenAI(
                 api_key=self.config.api_key,
                 organization=self.config.organization,
                 max_retries=0,  # We handle retries ourselves
+                http_client=http_client,
             )
             if self._max_concurrent:
                 self._semaphore = asyncio.Semaphore(self._max_concurrent)

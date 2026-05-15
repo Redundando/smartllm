@@ -77,14 +77,17 @@ class ChatCompletionsAPI:
             params["tool_choice"] = {"type": "function", "function": {"name": params["tools"][0]["function"]["name"]}}
         
         try:
-            started_at = datetime.now(timezone.utc).isoformat()
-            t0 = time.monotonic()
             if self.semaphore:
                 async with self.semaphore:
+                    started_at = datetime.now(timezone.utc).isoformat()
+                    t0 = time.monotonic()
                     response = await invoke_with_retry(self.client.chat.completions.create, **params)
+                    elapsed = round(time.monotonic() - t0, 3)
             else:
+                started_at = datetime.now(timezone.utc).isoformat()
+                t0 = time.monotonic()
                 response = await invoke_with_retry(self.client.chat.completions.create, **params)
-            elapsed = round(time.monotonic() - t0, 3)
+                elapsed = round(time.monotonic() - t0, 3)
             
             result = self._parse_response(response, model, request.response_format)
             result.timestamp = started_at
@@ -176,14 +179,17 @@ class ChatCompletionsAPI:
             params["tool_choice"] = {"type": "function", "function": {"name": params["tools"][0]["function"]["name"]}}
         
         try:
-            started_at = datetime.now(timezone.utc).isoformat()
-            t0 = time.monotonic()
             if self.semaphore:
                 async with self.semaphore:
+                    started_at = datetime.now(timezone.utc).isoformat()
+                    t0 = time.monotonic()
                     response = await invoke_with_retry(self.client.chat.completions.create, **params)
+                    elapsed = round(time.monotonic() - t0, 3)
             else:
+                started_at = datetime.now(timezone.utc).isoformat()
+                t0 = time.monotonic()
                 response = await invoke_with_retry(self.client.chat.completions.create, **params)
-            elapsed = round(time.monotonic() - t0, 3)
+                elapsed = round(time.monotonic() - t0, 3)
             
             result = self._parse_response(response, model, request.response_format)
             result.timestamp = started_at

@@ -57,10 +57,20 @@ class BedrockLLMClient:
         """Initialize aioboto3 Bedrock client"""
         try:
             import aioboto3
+            from botocore.config import Config
+
             creds = self.config.get_credentials()
+            # Match connection pool size to concurrency limit to avoid HTTP-layer bottleneck
+            pool_size = self._max_concurrent or 10
+            boto_config = Config(max_pool_connections=pool_size)
+
             session = aioboto3.Session()
-            self.client = await session.client("bedrock-runtime", **creds).__aenter__()
-            self.models_client = await session.client("bedrock", **creds).__aenter__()
+            self.client = await session.client(
+                "bedrock-runtime", config=boto_config, **creds
+            ).__aenter__()
+            self.models_client = await session.client(
+                "bedrock", config=boto_config, **creds
+            ).__aenter__()
         except ImportError:
             raise ImportError("aioboto3 is required. Install with: pip install aioboto3")
         except Exception:
@@ -244,16 +254,16 @@ class BedrockLLMClient:
             response_format=request.response_format,
         )
 
-        started_at = datetime.now(timezone.utc).isoformat()
-        t0 = time.monotonic()
         semaphore = self._get_semaphore(model)
         async with semaphore:
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
             response = await self._invoke_model_with_retry(
                 modelId=model,
                 body=json.dumps(body),
                 contentType="application/json",
             )
-        elapsed = round(time.monotonic() - t0, 3)
+            elapsed = round(time.monotonic() - t0, 3)
         
         response_body = json.loads(await response["body"].read())
         result = self._parse_response(response_body, model, request.response_format)
@@ -280,16 +290,16 @@ class BedrockLLMClient:
         if request.system_prompt:
             body["system"] = request.system_prompt
 
-        started_at = datetime.now(timezone.utc).isoformat()
-        t0 = time.monotonic()
         semaphore = self._get_semaphore(model)
         async with semaphore:
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
             response = await self._invoke_model_with_retry(
                 modelId=model,
                 body=json.dumps(body),
                 contentType="application/json",
             )
-        elapsed = round(time.monotonic() - t0, 3)
+            elapsed = round(time.monotonic() - t0, 3)
 
         response_body = json.loads(await response["body"].read())
         result = self._parse_thinking_response(response_body, model)
@@ -321,45 +331,44 @@ class BedrockLLMClient:
         if request.system_prompt:
             body_pass1["system"] = request.system_prompt
 
-        started_at = datetime.now(timezone.utc).isoformat()
-        t0 = time.monotonic()
         semaphore = self._get_semaphore(model)
         async with semaphore:
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
             response1 = await self._invoke_model_with_retry(
                 modelId=model,
                 body=json.dumps(body_pass1),
                 contentType="application/json",
             )
 
-        response_body1 = json.loads(await response1["body"].read())
-        pass1_result = self._parse_thinking_response(response_body1, model)
-        Logger.note(f"Pass 1 (thinking): {pass1_result.input_tokens} in / {pass1_result.output_tokens} out (thinking={pass1_result.reasoning_tokens})")
+            response_body1 = json.loads(await response1["body"].read())
+            pass1_result = self._parse_thinking_response(response_body1, model)
+            Logger.note(f"Pass 1 (thinking): {pass1_result.input_tokens} in / {pass1_result.output_tokens} out (thinking={pass1_result.reasoning_tokens})")
 
-        # --- Pass 2: Structure extraction ---
-        tool_schema = pydantic_to_tool_schema(request.response_format)
-        extraction_prompt = (
-            "Extract the content from the following text into the required structured format. "
-            "Map the information to the schema fields as accurately as possible. "
-            "Do not add, invent, or omit any information — use only what is provided.\n\n"
-            f"---\n{pass1_result.text}\n---"
-        )
+            # --- Pass 2: Structure extraction ---
+            tool_schema = pydantic_to_tool_schema(request.response_format)
+            extraction_prompt = (
+                "Extract the content from the following text into the required structured format. "
+                "Map the information to the schema fields as accurately as possible. "
+                "Do not add, invent, or omit any information — use only what is provided.\n\n"
+                f"---\n{pass1_result.text}\n---"
+            )
 
-        body_pass2 = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [{"role": "user", "content": extraction_prompt}],
-            "max_tokens": request.max_tokens or self.config.max_tokens,
-            "temperature": 0,
-            "tools": [tool_schema],
-            "tool_choice": {"type": "tool", "name": tool_schema["name"]},
-        }
+            body_pass2 = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "messages": [{"role": "user", "content": extraction_prompt}],
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "temperature": 0,
+                "tools": [tool_schema],
+                "tool_choice": {"type": "tool", "name": tool_schema["name"]},
+            }
 
-        async with semaphore:
             response2 = await self._invoke_model_with_retry(
                 modelId=model,
                 body=json.dumps(body_pass2),
                 contentType="application/json",
             )
-        elapsed = round(time.monotonic() - t0, 3)
+            elapsed = round(time.monotonic() - t0, 3)
 
         response_body2 = json.loads(await response2["body"].read())
         pass2_result = self._parse_response(response_body2, model, request.response_format)
@@ -512,16 +521,16 @@ class BedrockLLMClient:
             body["tool_choice"] = {"type": "tool", "name": tool_schema["name"]}
 
         try:
-            started_at = datetime.now(timezone.utc).isoformat()
-            t0 = time.monotonic()
             semaphore = self._get_semaphore(model)
             async with semaphore:
+                started_at = datetime.now(timezone.utc).isoformat()
+                t0 = time.monotonic()
                 response = await self._invoke_model_with_retry(
                     modelId=model,
                     body=json.dumps(body),
                     contentType="application/json",
                 )
-            elapsed = round(time.monotonic() - t0, 3)
+                elapsed = round(time.monotonic() - t0, 3)
             
             response_body = json.loads(await response["body"].read())
             result = self._parse_response(response_body, model, request.response_format)

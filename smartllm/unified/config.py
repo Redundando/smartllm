@@ -27,6 +27,8 @@ class LLMConfig:
         aws_session_token: AWS session token (Bedrock only)
         aws_region: AWS region (Bedrock only)
         top_k: Top-k sampling parameter (Bedrock only)
+        read_timeout: HTTP read timeout in seconds (Bedrock only, default: 300)
+        connect_timeout: HTTP connect timeout in seconds (Bedrock only, default: 10)
     """
     
     def __init__(
@@ -50,6 +52,8 @@ class LLMConfig:
         aws_session_token: Optional[str] = None,
         aws_region: Optional[str] = None,
         top_k: Optional[int] = None,
+        read_timeout: Optional[int] = None,
+        connect_timeout: Optional[int] = None,
         # Cache specific
         dynamo_table_name: Optional[str] = None,
         cache_ttl_days: Optional[float] = None,
@@ -80,6 +84,8 @@ class LLMConfig:
         self.aws_session_token = aws_session_token
         self.aws_region = aws_region
         self.top_k = top_k
+        self.read_timeout = read_timeout
+        self.connect_timeout = connect_timeout
 
         # Cache specific
         self.dynamo_table_name = dynamo_table_name
@@ -140,4 +146,6 @@ class LLMConfig:
             retry_delay=self.retry_delay,
             max_retry_delay=self.max_retry_delay,
             max_concurrent=self.max_concurrent,
+            read_timeout=self.read_timeout,
+            connect_timeout=self.connect_timeout,
         )

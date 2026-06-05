@@ -3,6 +3,7 @@
 import json
 import asyncio
 import time
+import logging
 from datetime import datetime, timezone
 from typing import Optional, AsyncIterator, List, Dict, Any, Type
 from pydantic import BaseModel
@@ -16,6 +17,8 @@ from ..models import (
 )
 from ..utils import pydantic_to_tool_schema, TwoLevelCache, retry_on_error
 from ..defaults import BEDROCK_THINKING_BUDGET
+
+logger = logging.getLogger('smartllm')
 
 # Default Bedrock model quotas for concurrency limiting
 DEFAULT_MODEL_QUOTAS = {
@@ -62,7 +65,11 @@ class BedrockLLMClient:
             creds = self.config.get_credentials()
             # Match connection pool size to concurrency limit to avoid HTTP-layer bottleneck
             pool_size = self._max_concurrent or 10
-            boto_config = Config(max_pool_connections=pool_size)
+            boto_config = Config(
+                max_pool_connections=pool_size,
+                read_timeout=self.config.read_timeout,
+                connect_timeout=self.config.connect_timeout,
+            )
 
             session = aioboto3.Session()
             self.client = await session.client(
@@ -110,17 +117,57 @@ class BedrockLLMClient:
         
         return self._semaphores[model]
 
-    async def _invoke_model_with_retry(self, **kwargs):
-        """Invoke model with retry logic"""
+    async def _invoke_model_with_retry(self, on_progress=None, retry_context=None, **kwargs):
+        """Invoke model with retry logic and context-aware logging
+        
+        Args:
+            on_progress: Optional callback for progress events (from request)
+            retry_context: Dict with model, max_tokens for logging context
+            **kwargs: Arguments passed to client.invoke_model
+        """
+        ctx = retry_context or {}
+        model = ctx.get("model", "unknown")
+        max_tokens = ctx.get("max_tokens")
+
         @retry_on_error(
             max_retries=self.config.max_retries,
             base_delay=self.config.retry_delay,
             max_delay=self.config.max_retry_delay,
+            on_retry=self._make_retry_handler(on_progress, model, max_tokens),
         )
         async def _invoke():
             return await self.client.invoke_model(**kwargs)
         
         return await _invoke()
+
+    def _make_retry_handler(self, on_progress, model, max_tokens):
+        """Create retry handler that logs context and fires on_progress callback"""
+        import inspect
+
+        async def _handle_retry(attempt, max_retries, error, delay):
+            error_name = type(error).__name__
+            error_msg = str(error)
+            logger.warning(
+                f"Retry {attempt}/{max_retries} after {error_name} on model {model} "
+                f"(max_tokens={max_tokens}). Waiting {delay:.1f}s... Error: {error_msg}"
+            )
+            if on_progress is not None:
+                event = {
+                    "event": "retry",
+                    "attempt": attempt,
+                    "max_retries": max_retries,
+                    "error": error_name,
+                    "error_message": error_msg,
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "delay": round(delay, 1),
+                }
+                if inspect.iscoroutinefunction(on_progress):
+                    await on_progress(event)
+                else:
+                    on_progress(event)
+
+        return _handle_retry
 
     async def list_available_models(self) -> List[Dict[str, Any]]:
         """List all available models in Bedrock"""
@@ -259,6 +306,8 @@ class BedrockLLMClient:
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
             response = await self._invoke_model_with_retry(
+                on_progress=request.on_progress,
+                retry_context={"model": model, "max_tokens": request.max_tokens or self.config.max_tokens},
                 modelId=model,
                 body=json.dumps(body),
                 contentType="application/json",
@@ -295,6 +344,8 @@ class BedrockLLMClient:
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
             response = await self._invoke_model_with_retry(
+                on_progress=request.on_progress,
+                retry_context={"model": model, "max_tokens": max_tokens},
                 modelId=model,
                 body=json.dumps(body),
                 contentType="application/json",
@@ -336,6 +387,8 @@ class BedrockLLMClient:
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
             response1 = await self._invoke_model_with_retry(
+                on_progress=request.on_progress,
+                retry_context={"model": model, "max_tokens": max_tokens},
                 modelId=model,
                 body=json.dumps(body_pass1),
                 contentType="application/json",
@@ -364,6 +417,8 @@ class BedrockLLMClient:
             }
 
             response2 = await self._invoke_model_with_retry(
+                on_progress=request.on_progress,
+                retry_context={"model": model, "max_tokens": request.max_tokens or self.config.max_tokens},
                 modelId=model,
                 body=json.dumps(body_pass2),
                 contentType="application/json",
@@ -526,6 +581,8 @@ class BedrockLLMClient:
                 started_at = datetime.now(timezone.utc).isoformat()
                 t0 = time.monotonic()
                 response = await self._invoke_model_with_retry(
+                    on_progress=request.on_progress,
+                    retry_context={"model": model, "max_tokens": request.max_tokens or self.config.max_tokens},
                     modelId=model,
                     body=json.dumps(body),
                     contentType="application/json",

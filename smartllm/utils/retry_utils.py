@@ -70,6 +70,7 @@ def retry_on_error(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 60.0,
+    on_retry: Callable = None,
 ):
     """Decorator for retrying async functions with exponential backoff
     
@@ -77,6 +78,9 @@ def retry_on_error(
         max_retries: Maximum number of retry attempts
         base_delay: Initial delay in seconds
         max_delay: Maximum delay between retries
+        on_retry: Optional async callback(attempt, max_retries, error, delay) 
+                  called before each retry. When provided, the default log 
+                  message is suppressed (caller handles logging).
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @wraps(func)
@@ -96,12 +100,15 @@ def retry_on_error(
                     # Calculate backoff delay
                     delay = calculate_backoff(attempt, base_delay, max_delay)
                     
-                    # Log retry attempt
-                    error_name = type(e).__name__
-                    logger.warning(
-                        f"Retry {attempt + 1}/{max_retries} after {error_name}, "
-                        f"waiting {delay:.1f}s..."
-                    )
+                    # Fire on_retry callback or fall back to default log
+                    if on_retry is not None:
+                        await on_retry(attempt + 1, max_retries, e, delay)
+                    else:
+                        error_name = type(e).__name__
+                        logger.warning(
+                            f"Retry {attempt + 1}/{max_retries} after {error_name}, "
+                            f"waiting {delay:.1f}s..."
+                        )
                     
                     # Wait before retry
                     await asyncio.sleep(delay)

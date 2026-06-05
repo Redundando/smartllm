@@ -81,12 +81,22 @@ class ChatCompletionsAPI:
                 async with self.semaphore:
                     started_at = datetime.now(timezone.utc).isoformat()
                     t0 = time.monotonic()
-                    response = await invoke_with_retry(self.client.chat.completions.create, **params)
+                    response = await invoke_with_retry(
+                        self.client.chat.completions.create,
+                        on_progress=request.on_progress,
+                        retry_context={"model": model, "max_tokens": request.max_tokens or self.config.max_tokens},
+                        **params,
+                    )
                     elapsed = round(time.monotonic() - t0, 3)
             else:
                 started_at = datetime.now(timezone.utc).isoformat()
                 t0 = time.monotonic()
-                response = await invoke_with_retry(self.client.chat.completions.create, **params)
+                response = await invoke_with_retry(
+                    self.client.chat.completions.create,
+                    on_progress=request.on_progress,
+                    retry_context={"model": model, "max_tokens": request.max_tokens or self.config.max_tokens},
+                    **params,
+                )
                 elapsed = round(time.monotonic() - t0, 3)
             
             result = self._parse_response(response, model, request.response_format)
@@ -183,12 +193,22 @@ class ChatCompletionsAPI:
                 async with self.semaphore:
                     started_at = datetime.now(timezone.utc).isoformat()
                     t0 = time.monotonic()
-                    response = await invoke_with_retry(self.client.chat.completions.create, **params)
+                    response = await invoke_with_retry(
+                        self.client.chat.completions.create,
+                        on_progress=request.on_progress,
+                        retry_context={"model": model, "max_tokens": request.max_tokens or self.config.max_tokens},
+                        **params,
+                    )
                     elapsed = round(time.monotonic() - t0, 3)
             else:
                 started_at = datetime.now(timezone.utc).isoformat()
                 t0 = time.monotonic()
-                response = await invoke_with_retry(self.client.chat.completions.create, **params)
+                response = await invoke_with_retry(
+                    self.client.chat.completions.create,
+                    on_progress=request.on_progress,
+                    retry_context={"model": model, "max_tokens": request.max_tokens or self.config.max_tokens},
+                    **params,
+                )
                 elapsed = round(time.monotonic() - t0, 3)
             
             result = self._parse_response(response, model, request.response_format)

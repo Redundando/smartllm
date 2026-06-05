@@ -1,6 +1,8 @@
 """Main OpenAI LLM client wrapper"""
 
 import asyncio
+import inspect
+import logging
 from typing import Optional, AsyncIterator
 from logorator import Logger
 from .config import OpenAIConfig
@@ -8,6 +10,8 @@ from .responses_api import ResponsesAPI
 from .chat_completions_api import ChatCompletionsAPI
 from ..models import TextRequest, MessageRequest, TextResponse, StreamChunk
 from ..utils import TwoLevelCache, retry_on_error
+
+logger = logging.getLogger('smartllm')
 
 
 class OpenAILLMClient:
@@ -95,17 +99,56 @@ class OpenAILLMClient:
         """Async context manager exit"""
         await self.close()
 
-    async def _invoke_with_retry(self, func, **kwargs):
-        """Invoke API with retry logic"""
+    async def _invoke_with_retry(self, func, on_progress=None, retry_context=None, **kwargs):
+        """Invoke API with retry logic and context-aware logging
+        
+        Args:
+            func: The async API function to call
+            on_progress: Optional callback for progress events (from request)
+            retry_context: Dict with model, max_tokens for logging context
+            **kwargs: Arguments passed to the API function
+        """
+        ctx = retry_context or {}
+        model = ctx.get("model", "unknown")
+        max_tokens = ctx.get("max_tokens")
+
         @retry_on_error(
             max_retries=self.config.max_retries,
             base_delay=self.config.retry_delay,
             max_delay=self.config.max_retry_delay,
+            on_retry=self._make_retry_handler(on_progress, model, max_tokens),
         )
         async def _invoke():
             return await func(**kwargs)
         
         return await _invoke()
+
+    def _make_retry_handler(self, on_progress, model, max_tokens):
+        """Create retry handler that logs context and fires on_progress callback"""
+        async def _handle_retry(attempt, max_retries, error, delay):
+            error_name = type(error).__name__
+            error_msg = str(error)
+            logger.warning(
+                f"Retry {attempt}/{max_retries} after {error_name} on model {model} "
+                f"(max_tokens={max_tokens}). Waiting {delay:.1f}s... Error: {error_msg}"
+            )
+            if on_progress is not None:
+                event = {
+                    "event": "retry",
+                    "attempt": attempt,
+                    "max_retries": max_retries,
+                    "error": error_name,
+                    "error_message": error_msg,
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "delay": round(delay, 1),
+                }
+                if inspect.iscoroutinefunction(on_progress):
+                    await on_progress(event)
+                else:
+                    on_progress(event)
+
+        return _handle_retry
 
     async def generate_text(self, request: TextRequest) -> TextResponse:
         """Generate text from a prompt

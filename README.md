@@ -16,7 +16,8 @@ A unified async Python wrapper for multiple LLM providers with a consistent inte
 - **Rate Limiting** — Built-in concurrency control per model
 - **Reasoning Models** — Full support including `reasoning_effort` and `reasoning_tokens`
 - **Extended Thinking (Bedrock)** — Claude extended thinking with two-pass structured output
-- **Progress Callbacks** — Optional `on_progress` for real-time events
+- **Progress Callbacks** — Optional `on_progress` for real-time events (including retries)
+- **Configurable Timeouts** — Adjustable HTTP read/connect timeouts for Bedrock (default 300s read)
 
 ## Installation
 
@@ -58,6 +59,8 @@ export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
 export AWS_REGION="us-east-1"
 export BEDROCK_MODEL="anthropic.claude-3-sonnet-20240229-v1:0"  # optional
+export BEDROCK_READ_TIMEOUT="300"   # HTTP read timeout in seconds (default: 300)
+export BEDROCK_CONNECT_TIMEOUT="10" # HTTP connect timeout in seconds (default: 10)
 ```
 
 Explicit credentials are optional. If omitted, boto3's default credential chain is used — including EC2 instance profiles, ECS task roles, Lambda execution roles, and `~/.aws/credentials`.
@@ -244,7 +247,20 @@ response = await client.generate_text(
 )
 ```
 
-Events: `llm_started`, `llm_done`, `cache_hit` (with `cache_source`, `cache_key`), `error` (with `message`). Each event dict includes `event`, `ts`, `prompt`, `model`, `provider`. `llm_done` and `cache_hit` also include `input_tokens`, `output_tokens`, `reasoning_tokens`, `cached_tokens`.
+Events: `llm_started`, `llm_done`, `cache_hit` (with `cache_source`, `cache_key`), `retry`, `error` (with `message`). Each event dict includes `event`, `ts`, `prompt`, `model`, `provider`. `llm_done` and `cache_hit` also include `input_tokens`, `output_tokens`, `reasoning_tokens`, `cached_tokens`.
+
+The `retry` event is emitted before each retry attempt and includes:
+
+| Field | Description |
+|---|---|
+| `event` | `"retry"` |
+| `attempt` | Current retry number (1-indexed) |
+| `max_retries` | Total retries configured |
+| `error` | Exception class name (e.g. `"ReadTimeoutError"`) |
+| `error_message` | Full error string |
+| `model` | Model being called |
+| `max_tokens` | Max tokens for this request |
+| `delay` | Seconds until next attempt |
 
 ### DynamoDB Caching
 
@@ -264,7 +280,7 @@ from smartllm.bedrock import BedrockLLMClient, BedrockConfig
 async with OpenAILLMClient(OpenAIConfig(api_key="...")) as client:
     models = await client.list_available_models()
 
-async with BedrockLLMClient(BedrockConfig(aws_region="us-east-1")) as client:
+async with BedrockLLMClient(BedrockConfig(aws_region="us-east-1", read_timeout=300)) as client:
     models = await client.list_available_model_ids()
 ```
 

@@ -36,6 +36,8 @@ class BedrockConfig:
         retry_delay: Initial retry delay in seconds
         max_retry_delay: Maximum retry delay in seconds
         max_concurrent: Maximum concurrent requests (optional)
+        read_timeout: HTTP read timeout in seconds (default: 300)
+        connect_timeout: HTTP connect timeout in seconds (default: 10)
     """
 
     def __init__(
@@ -53,6 +55,8 @@ class BedrockConfig:
         retry_delay: Optional[float] = None,
         max_retry_delay: Optional[float] = None,
         max_concurrent: Optional[int] = None,
+        read_timeout: Optional[int] = None,
+        connect_timeout: Optional[int] = None,
     ):
         # AWS Credentials: explicit args > environment variables
         self.aws_access_key_id = aws_access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
@@ -74,6 +78,10 @@ class BedrockConfig:
         
         # Rate limit configurations
         self.max_concurrent = max_concurrent if max_concurrent is not None else (int(os.getenv("BEDROCK_MAX_CONCURRENT")) if os.getenv("BEDROCK_MAX_CONCURRENT") else None)
+        
+        # HTTP timeout configurations
+        self.read_timeout = read_timeout if read_timeout is not None else int(os.getenv("BEDROCK_READ_TIMEOUT", "300"))
+        self.connect_timeout = connect_timeout if connect_timeout is not None else int(os.getenv("BEDROCK_CONNECT_TIMEOUT", "10"))
 
     def validate(self) -> bool:
         """Validate that required AWS credentials are present

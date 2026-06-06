@@ -37,3 +37,5 @@ venv/
 *.swp
 *.swo
 *~
+.kiro/specs/streaming-with-assembly/.config.kiro
+.kiro

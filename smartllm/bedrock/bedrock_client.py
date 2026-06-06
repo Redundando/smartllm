@@ -3,9 +3,10 @@
 import json
 import asyncio
 import time
+import inspect
 import logging
 from datetime import datetime, timezone
-from typing import Optional, AsyncIterator, List, Dict, Any, Type
+from typing import Optional, AsyncIterator, List, Dict, Any, Type, Callable
 from pydantic import BaseModel
 from logorator import Logger
 from .config import BedrockConfig
@@ -16,9 +17,31 @@ from ..models import (
     StreamChunk,
 )
 from ..utils import pydantic_to_tool_schema, TwoLevelCache, retry_on_error
+from ..utils.retry_utils import is_retryable_error, calculate_backoff
 from ..defaults import BEDROCK_THINKING_BUDGET
 
 logger = logging.getLogger('smartllm')
+
+# --- Constants ---
+
+# Extra tokens added to max_tokens when thinking budget exceeds the configured max.
+# Ensures the model has room for both thinking and output text.
+THINKING_BUDGET_HEADROOM = 4096
+
+# Minimum thinking budget enforced by the Bedrock API.
+MIN_THINKING_BUDGET = 1024
+
+# Progress events fire every N estimated tokens (chars // CHARS_PER_TOKEN_ESTIMATE).
+PROGRESS_TOKEN_THRESHOLD = 500
+
+# Progress events also fire if this many seconds elapse without an event.
+PROGRESS_TIME_THRESHOLD_SECONDS = 10
+
+# Rough character-to-token ratio for estimating token counts from text length.
+CHARS_PER_TOKEN_ESTIMATE = 4
+
+# Maximum characters of the prompt included in progress events.
+PROMPT_PREVIEW_LENGTH = 200
 
 # Default Bedrock model quotas for concurrency limiting
 DEFAULT_MODEL_QUOTAS = {
@@ -169,6 +192,386 @@ class BedrockLLMClient:
 
         return _handle_retry
 
+    async def _consume_stream(
+        self,
+        response_stream,
+        model: str,
+        on_progress: Optional[Callable],
+        start_time: float,
+    ) -> dict:
+        """Consume all chunks from a Bedrock response stream.
+
+        Args:
+            response_stream: The async iterable from invoke_model_with_response_stream.
+            model: Model ID for context in progress events.
+            on_progress: Optional callback for progress events.
+            start_time: Monotonic clock start for elapsed_seconds calculation.
+
+        Returns:
+            Dict with keys: text, thinking_text, input_tokens, output_tokens,
+            reasoning_tokens, stop_reason.
+        """
+        text_parts: list = []
+        thinking_parts: list = []
+        input_tokens: int = 0
+        output_tokens: int = 0
+        reasoning_tokens: int = 0
+        stop_reason: str = ""
+
+        # Progress tracking state
+        last_text_progress_tokens: int = 0
+        last_text_progress_time: float = start_time
+        last_thinking_progress_tokens: int = 0
+        last_thinking_progress_time: float = start_time
+
+        async def _fire_progress(event: dict) -> None:
+            """Fire a progress event, handling both async and sync callbacks."""
+            if on_progress is None:
+                return
+            if inspect.iscoroutinefunction(on_progress):
+                await on_progress(event)
+            else:
+                on_progress(event)
+
+        async for event in response_stream:
+            if "chunk" not in event:
+                continue
+
+            chunk_data = json.loads(event["chunk"]["bytes"])
+            event_type = chunk_data.get("type", "")
+
+            if event_type == "message_start":
+                # Extract input_tokens from the message start metadata
+                message = chunk_data.get("message", {})
+                usage = message.get("usage", {})
+                input_tokens = usage.get("input_tokens", 0)
+
+            elif event_type == "content_block_delta":
+                delta = chunk_data.get("delta", {})
+                delta_type = delta.get("type", "")
+
+                if delta_type == "thinking_delta":
+                    thinking_text = delta.get("thinking", "")
+                    if thinking_text:
+                        thinking_parts.append(thinking_text)
+
+                        # Check thinking progress threshold
+                        accumulated_thinking = "".join(thinking_parts)
+                        current_thinking_tokens = len(accumulated_thinking) // CHARS_PER_TOKEN_ESTIMATE
+                        now = time.monotonic()
+                        tokens_since_last = current_thinking_tokens - last_thinking_progress_tokens
+                        time_since_last = now - last_thinking_progress_time
+
+                        if tokens_since_last >= PROGRESS_TOKEN_THRESHOLD or time_since_last >= PROGRESS_TIME_THRESHOLD_SECONDS:
+                            await _fire_progress({
+                                "event": "stream_thinking",
+                                "thinking_tokens_so_far": current_thinking_tokens,
+                                "thinking_text_so_far": accumulated_thinking,
+                                "elapsed_seconds": round(now - start_time, 3),
+                            })
+                            last_thinking_progress_tokens = current_thinking_tokens
+                            last_thinking_progress_time = now
+
+                elif delta_type == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        text_parts.append(text)
+
+                        # Check text progress threshold
+                        accumulated_text = "".join(text_parts)
+                        current_text_tokens = len(accumulated_text) // CHARS_PER_TOKEN_ESTIMATE
+                        now = time.monotonic()
+                        tokens_since_last = current_text_tokens - last_text_progress_tokens
+                        time_since_last = now - last_text_progress_time
+
+                        if tokens_since_last >= PROGRESS_TOKEN_THRESHOLD or time_since_last >= PROGRESS_TIME_THRESHOLD_SECONDS:
+                            await _fire_progress({
+                                "event": "stream_progress",
+                                "text_tokens_so_far": current_text_tokens,
+                                "text_so_far": accumulated_text,
+                                "elapsed_seconds": round(now - start_time, 3),
+                            })
+                            last_text_progress_tokens = current_text_tokens
+                            last_text_progress_time = now
+
+            elif event_type == "message_delta":
+                # Extract output token counts and stop reason from message_delta
+                usage = chunk_data.get("usage", {})
+                output_tokens = usage.get("output_tokens", output_tokens)
+                reasoning_tokens = usage.get("reasoning_tokens", reasoning_tokens)
+                delta = chunk_data.get("delta", {})
+                stop_reason = delta.get("stop_reason", stop_reason)
+
+            elif event_type == "message_stop":
+                # Stream complete — stop_reason may also come here
+                metrics = chunk_data.get("amazon-bedrock-invocationMetrics", {})
+                if metrics:
+                    # Prefer metrics values if available
+                    input_tokens = metrics.get("inputTokenCount", input_tokens)
+                    output_tokens = metrics.get("outputTokenCount", output_tokens)
+
+        return {
+            "text": "".join(text_parts),
+            "thinking_text": "".join(thinking_parts),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "stop_reason": stop_reason,
+        }
+
+    async def generate_text_streamed(self, request: TextRequest) -> TextResponse:
+        """Generate text using internal streaming, returning assembled response.
+
+        Opens a streaming connection to Bedrock and consumes all chunks internally,
+        assembling them into a single TextResponse. Fires progress callbacks during
+        consumption. Respects concurrency semaphores, caching, and retry logic.
+
+        Args:
+            request: TextRequest with prompt and parameters.
+                     Must NOT have response_format set.
+
+        Returns:
+            TextResponse with complete generated text, token counts, and metadata.
+
+        Raises:
+            ValueError: If request.response_format is not None.
+        """
+        # 1. Reject structured output — incompatible with streaming assembly
+        if request.response_format is not None:
+            raise ValueError(
+                "generate_text_streamed does not support structured output (response_format). "
+                "Use generate_text with the two-pass thinking approach as an alternative "
+                "for structured output with large prompts."
+            )
+
+        if not self.client:
+            await self._init_client()
+
+        # 2. Resolve parameters using same logic as generate_text
+        model = request.model or self.config.default_model
+        thinking_budget = self._resolve_thinking_budget(request)
+        temperature = request.temperature if request.temperature is not None else 0
+        on_progress = request.on_progress
+
+        # 3. Cache key — same logic as generate_text
+        cache_key = None
+        if temperature == 0 or thinking_budget:
+            cache_key = self._generate_cache_key(
+                model=model,
+                prompt=request.prompt,
+                max_tokens=request.max_tokens or self.config.max_tokens,
+                top_p=request.top_p,
+                top_k=request.top_k,
+                system_prompt=request.system_prompt,
+                response_format=None,  # Always None (structured output rejected above)
+                reasoning_effort=request.reasoning_effort,
+                budget_tokens=thinking_budget,
+            )
+
+        # 4. Handle clear_cache
+        if request.clear_cache and cache_key:
+            self.cache.clear(cache_key)
+
+        # 5. Handle use_cache — return immediately on cache hit
+        if request.use_cache and cache_key:
+            cached, cache_source = self.cache.get(cache_key)
+            if cached:
+                # Fire cache_hit progress event
+                if on_progress is not None:
+                    event = {
+                        "event": "cache_hit",
+                        "cache_source": cache_source,
+                        "model": model,
+                    }
+                    if inspect.iscoroutinefunction(on_progress):
+                        await on_progress(event)
+                    else:
+                        on_progress(event)
+                result = self._deserialize_response(cached["data"], None, cached.get("metadata", {}))
+                result.cache_source = cache_source
+                result.cache_key = cache_key
+                return result
+
+        # 6. Fire llm_started progress event
+        if on_progress is not None:
+            event = {
+                "event": "llm_started",
+                "model": model,
+                "prompt": request.prompt[:PROMPT_PREVIEW_LENGTH],
+                "provider": "bedrock",
+            }
+            if inspect.iscoroutinefunction(on_progress):
+                await on_progress(event)
+            else:
+                on_progress(event)
+
+        # 7. Build request body
+        max_tokens = request.max_tokens or self.config.max_tokens
+        if thinking_budget:
+            if thinking_budget >= max_tokens:
+                max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "messages": [{"role": "user", "content": request.prompt}],
+                "max_tokens": max_tokens,
+                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
+            }
+            if request.system_prompt:
+                body["system"] = request.system_prompt
+        else:
+            body = self._build_request_body(
+                model=model,
+                prompt=request.prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=request.top_p or self.config.top_p,
+                top_k=request.top_k or self.config.top_k,
+                system_prompt=request.system_prompt,
+            )
+
+        # 8. Acquire semaphore, open stream, consume, assemble response
+        semaphore = self._get_semaphore(model)
+        await semaphore.acquire()
+        try:
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
+
+            # Retry loop: wraps stream open + consume
+            last_error = None
+            stream_result = None
+            for attempt in range(self.config.max_retries + 1):
+                try:
+                    response = await self.client.invoke_model_with_response_stream(
+                        body=json.dumps(body),
+                        modelId=model,
+                        accept="application/json",
+                        contentType="application/json",
+                    )
+
+                    # Consume the stream
+                    stream_result = await self._consume_stream(
+                        response_stream=response["body"],
+                        model=model,
+                        on_progress=on_progress,
+                        start_time=t0,
+                    )
+                    # Success — exit retry loop
+                    break
+                except Exception as e:
+                    last_error = e
+                    # Non-retryable or last attempt → raise
+                    if not is_retryable_error(e) or attempt == self.config.max_retries:
+                        raise
+                    # Retryable: discard accumulated chunks, fire retry event, backoff
+                    stream_result = None
+                    delay = calculate_backoff(attempt, self.config.retry_delay, self.config.max_retry_delay)
+                    # Fire retry progress event
+                    if on_progress is not None:
+                        retry_event = {
+                            "event": "retry",
+                            "attempt": attempt + 1,
+                            "max_retries": self.config.max_retries,
+                            "error": type(e).__name__,
+                            "delay": round(delay, 1),
+                        }
+                        if inspect.iscoroutinefunction(on_progress):
+                            await on_progress(retry_event)
+                        else:
+                            on_progress(retry_event)
+                    logger.warning(
+                        f"Stream retry {attempt + 1}/{self.config.max_retries} after "
+                        f"{type(e).__name__} on model {model}. Waiting {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    # Reset start time for next attempt
+                    t0 = time.monotonic()
+
+            elapsed = round(time.monotonic() - t0, 3)
+
+            # 9. Assemble TextResponse
+            metadata = {}
+            if stream_result["thinking_text"]:
+                metadata["thinking"] = stream_result["thinking_text"]
+
+            result = TextResponse(
+                text=stream_result["text"],
+                model=model,
+                stop_reason=stream_result["stop_reason"],
+                input_tokens=stream_result["input_tokens"],
+                output_tokens=stream_result["output_tokens"],
+                reasoning_tokens=stream_result["reasoning_tokens"],
+                cached_tokens=0,
+                timestamp=started_at,
+                elapsed_seconds=elapsed,
+                metadata=metadata,
+                cache_source="miss",
+            )
+
+            # 10. Write to cache if cache-eligible
+            if cache_key:
+                cache_metadata = {
+                    "prompt": request.prompt,
+                    "model": model,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "system_prompt": request.system_prompt,
+                    "response_format": None,
+                    "top_p": request.top_p or self.config.top_p,
+                    "top_k": request.top_k or self.config.top_k,
+                    "reasoning_effort": request.reasoning_effort,
+                    "budget_tokens": thinking_budget,
+                }
+                self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
+            result.cache_key = cache_key
+
+            # 11. Fire llm_done progress event
+            if on_progress is not None:
+                event = {
+                    "event": "llm_done",
+                    "input_tokens": stream_result["input_tokens"],
+                    "output_tokens": stream_result["output_tokens"],
+                    "reasoning_tokens": stream_result["reasoning_tokens"],
+                    "elapsed_seconds": elapsed,
+                }
+                if inspect.iscoroutinefunction(on_progress):
+                    await on_progress(event)
+                else:
+                    on_progress(event)
+
+            return result
+
+        except Exception as e:
+            # Fire error progress event
+            text_so_far = ""
+            tokens_so_far = 0
+            # Try to get accumulated text from locals if available
+            if 'stream_result' in locals() and stream_result is not None:
+                text_so_far = stream_result.get("text", "")
+                tokens_so_far = len(text_so_far) // CHARS_PER_TOKEN_ESTIMATE
+            
+            if on_progress is not None:
+                error_event = {
+                    "event": "error",
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "text_so_far": text_so_far,
+                    "tokens_so_far": tokens_so_far,
+                }
+                try:
+                    if inspect.iscoroutinefunction(on_progress):
+                        await on_progress(error_event)
+                    else:
+                        on_progress(error_event)
+                except Exception:
+                    pass  # Don't let callback errors mask the original error
+
+            # Attach context to exception
+            e.text_so_far = text_so_far
+            e.tokens_so_far = tokens_so_far
+            raise
+        finally:
+            semaphore.release()
+
     async def list_available_models(self) -> List[Dict[str, Any]]:
         """List all available models in Bedrock"""
         if not self.models_client:
@@ -198,7 +601,7 @@ class BedrockLLMClient:
         Priority: budget_tokens > reasoning_effort mapping.
         """
         if request.budget_tokens:
-            return max(request.budget_tokens, 1024)  # Minimum 1024 per API requirement
+            return max(request.budget_tokens, MIN_THINKING_BUDGET)
         if request.reasoning_effort:
             budget = BEDROCK_THINKING_BUDGET.get(request.reasoning_effort)
             if budget is None:
@@ -328,7 +731,7 @@ class BedrockLLMClient:
         max_tokens = request.max_tokens or self.config.max_tokens
         # budget_tokens must be less than max_tokens
         if thinking_budget >= max_tokens:
-            max_tokens = thinking_budget + 4096
+            max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
 
         body = {
             "anthropic_version": "bedrock-2023-05-31",
@@ -371,7 +774,7 @@ class BedrockLLMClient:
         # --- Pass 1: Think ---
         max_tokens = request.max_tokens or self.config.max_tokens
         if thinking_budget >= max_tokens:
-            max_tokens = thinking_budget + 4096
+            max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
 
         body_pass1 = {
             "anthropic_version": "bedrock-2023-05-31",
@@ -470,7 +873,7 @@ class BedrockLLMClient:
         if thinking_budget:
             max_tokens = request.max_tokens or self.config.max_tokens
             if thinking_budget >= max_tokens:
-                max_tokens = thinking_budget + 4096
+                max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "messages": [{"role": "user", "content": request.prompt}],

@@ -93,6 +93,29 @@ class LLMClient:
             await _fire(cb, {"event": "error", "ts": time.time(), "message": str(e), **base})
             raise
     
+    async def generate_text_streamed(self, request: TextRequest) -> TextResponse:
+        """Streamed generation with assembly - delegates to provider.
+
+        Internally streams from the provider and returns an assembled TextResponse.
+        Only supported for the Bedrock provider.
+
+        Args:
+            request: TextRequest with prompt and parameters.
+
+        Returns:
+            TextResponse from the provider's streamed generation.
+
+        Raises:
+            NotImplementedError: If provider is not 'bedrock'.
+            ValueError: If request.response_format is set (propagated from Bedrock).
+        """
+        if self.config.provider != "bedrock":
+            raise NotImplementedError(
+                "Streamed generation is not yet supported for OpenAI. "
+                "Use generate_text() or generate_text_stream() instead."
+            )
+        return await self._client.generate_text_streamed(request)
+
     async def generate_text_stream(self, request: TextRequest) -> AsyncIterator[StreamChunk]:
         """Stream text generation
         

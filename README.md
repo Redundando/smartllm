@@ -13,6 +13,7 @@ A unified async Python wrapper for multiple LLM providers with a consistent inte
 - **Auto Retry** — Exponential backoff for transient failures
 - **Structured Output** — Native Pydantic model support
 - **Streaming** — Real-time streaming responses
+- **Streaming with Assembly** — Internal streaming that returns a single `TextResponse` (solves Bedrock read timeouts on large requests)
 - **Rate Limiting** — Built-in concurrency control per model
 - **Reasoning Models** — Full support including `reasoning_effort` and `reasoning_tokens`
 - **Extended Thinking (Bedrock)** — Claude extended thinking with two-pass structured output
@@ -126,6 +127,63 @@ async with LLMClient(provider="openai") as client:
     ):
         print(chunk.text, end="", flush=True)
 ```
+
+### Streaming with Assembly (Bedrock only)
+
+`generate_text_streamed` uses Bedrock's streaming API internally but returns a fully assembled `TextResponse` — identical to `generate_text()`. This solves read timeouts on large requests (50K+ input, 16K+ output tokens) where the non-streaming `invoke_model` connection idles and times out.
+
+```python
+async with LLMClient(provider="bedrock") as client:
+    response = await client.generate_text_streamed(
+        TextRequest(
+            prompt="Write a 5000-word technical analysis...",
+            max_tokens=8192,
+            temperature=0,
+        )
+    )
+    # Returns a normal TextResponse — no chunk iteration needed
+    print(response.text)
+    print(f"Tokens: {response.input_tokens} in, {response.output_tokens} out")
+```
+
+**When to use `generate_text_streamed` vs `generate_text`:**
+
+| Scenario | Method |
+|----------|--------|
+| Short requests (< 30K chars input, < 4K tokens output) | `generate_text` |
+| Large requests that risk read timeout (long generation time) | `generate_text_streamed` |
+| Need structured output (`response_format`) | `generate_text` (streamed rejects this) |
+| Need progress visibility during long generation | `generate_text_streamed` |
+| OpenAI provider | `generate_text` (streamed is Bedrock-only) |
+
+**Behavior:**
+- Same `TextResponse` shape as `generate_text` (text, model, tokens, metadata, cache)
+- Same cache keys — a response cached by one method is served to the other
+- Same semaphore, retry logic, and concurrency gating
+- Fires progress events: `llm_started`, `stream_progress`, `stream_thinking`, `llm_done`, `error`, `retry`, `cache_hit`
+- Raises `ValueError` if `response_format` is set (suggests `generate_text` as alternative)
+- Raises `NotImplementedError` on OpenAI provider
+
+**Progress events during streaming:**
+
+```python
+def on_progress(event):
+    if event["event"] == "stream_progress":
+        print(f"{event['text_tokens_so_far']} tokens generated...")
+    elif event["event"] == "stream_thinking":
+        print(f"{event['thinking_tokens_so_far']} thinking tokens...")
+
+response = await client.generate_text_streamed(
+    TextRequest(prompt="...", on_progress=on_progress)
+)
+```
+
+`stream_progress` and `stream_thinking` fire every ~500 estimated tokens or every 10 seconds (whichever comes first). Token count is estimated as `len(text) // 4`.
+
+| Event | Fields |
+|-------|--------|
+| `stream_progress` | `text_tokens_so_far`, `text_so_far`, `elapsed_seconds` |
+| `stream_thinking` | `thinking_tokens_so_far`, `thinking_text_so_far`, `elapsed_seconds` |
 
 ### Reasoning Models
 
@@ -361,7 +419,7 @@ class BookList(BaseModel):
 
 ## Caching
 
-Responses are cached automatically when `temperature=0`, when using a reasoning model, or when extended thinking is enabled. Streaming responses are never cached.
+Responses are cached automatically when `temperature=0`, when using a reasoning model, or when extended thinking is enabled. Streaming responses (`generate_text_stream`) are never cached. `generate_text_streamed` responses are cached — they share the same cache keys as `generate_text`.
 
 **Cache key** is derived from: `model`, `prompt` (or `messages`), `max_tokens`, `top_p`, `system_prompt`, `response_format`, `api_type`, `reasoning_effort`, `budget_tokens`.
 

@@ -18,12 +18,18 @@ def pydantic_to_tool_schema(model: Type[BaseModel], tool_name: str = None) -> Di
     name = tool_name or f"return_{model.__name__.lower()}"
     description = model.__doc__ or f"Returns structured {model.__name__} data"
     
+    input_schema = {
+        "type": schema.get("type", "object"),
+        "properties": schema.get("properties", {}),
+        "required": schema.get("required", []),
+    }
+
+    # Include $defs so that $ref pointers in nested models can be resolved
+    if "$defs" in schema:
+        input_schema["$defs"] = schema["$defs"]
+
     return {
         "name": name,
         "description": description.strip(),
-        "input_schema": {
-            "type": schema.get("type", "object"),
-            "properties": schema.get("properties", {}),
-            "required": schema.get("required", [])
-        }
+        "input_schema": input_schema,
     }

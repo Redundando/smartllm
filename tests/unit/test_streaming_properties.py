@@ -555,8 +555,10 @@ class TestCacheKeyEquivalence:
 
         client = _create_test_client()
 
-        # Resolve thinking_budget the same way both methods do
-        thinking_budget = client._resolve_thinking_budget(request)
+        # Both generate_text and generate_text_streamed now use request.budget_tokens
+        # directly (not a resolved int), since adaptive-thinking models don't have a
+        # numeric budget at all.
+        budget_tokens = request.budget_tokens
 
         # Resolve max_tokens the same way both methods do
         resolved_max_tokens = request.max_tokens or client.config.max_tokens
@@ -571,7 +573,7 @@ class TestCacheKeyEquivalence:
             system_prompt=request.system_prompt,
             response_format=None,
             reasoning_effort=request.reasoning_effort,
-            budget_tokens=thinking_budget,
+            budget_tokens=budget_tokens,
         )
 
         # Cache key as generate_text_streamed computes it
@@ -584,7 +586,7 @@ class TestCacheKeyEquivalence:
             system_prompt=request.system_prompt,
             response_format=None,  # Always None for streaming
             reasoning_effort=request.reasoning_effort,
-            budget_tokens=thinking_budget,
+            budget_tokens=budget_tokens,
         )
 
         # Property assertion: cache keys must be identical
@@ -594,7 +596,7 @@ class TestCacheKeyEquivalence:
             f"  Non-streaming key: {key_non_streaming}\n"
             f"  Params: model={model}, max_tokens={resolved_max_tokens}, "
             f"top_p={top_p}, top_k={top_k}, reasoning_effort={reasoning_effort}, "
-            f"budget_tokens={thinking_budget}"
+            f"budget_tokens={budget_tokens}"
         )
 
 

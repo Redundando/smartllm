@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="smartllm",
-    version="0.1.4",
+    version="0.1.21",
     author="Arved Klöhn",
     author_email="arved.kloehn@gmail.com",
     description="A unified async Python wrapper for multiple LLM providers with OpenAI Response API and reasoning support",

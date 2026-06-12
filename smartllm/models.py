@@ -64,23 +64,33 @@ class MessageRequest:
         model: Model ID to use (optional, uses default if None)
         temperature: Sampling temperature 0-1 (optional)
         max_tokens: Maximum output tokens (optional)
+        top_p: Nucleus sampling parameter (optional)
+        top_k: Top-k sampling parameter (optional, Bedrock only)
         system_prompt: System prompt to set context (optional)
         stream: Enable streaming response (default: False)
         response_format: Pydantic model for structured output (optional)
         use_cache: Enable response caching (default: True)
         clear_cache: Clear cache before request (default: False)
         api_type: OpenAI API type - "responses" (default) or "chat_completions"
+        reasoning_effort: "low" | "medium" | "high" — extended thinking on
+            Bedrock Claude models that support it. Ignored elsewhere.
+        budget_tokens: Explicit thinking budget for Bedrock manual-thinking
+            models. Mapped to nearest effort level on adaptive-thinking models.
     """
     messages: List[Message]
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
     system_prompt: Optional[str] = None
     stream: bool = False
     response_format: Optional[Type[BaseModel]] = None
     use_cache: bool = True
     clear_cache: bool = False
     api_type: str = "responses"
+    reasoning_effort: Optional[str] = None
+    budget_tokens: Optional[int] = None
     on_progress: Optional[Callable] = None
 
     def __str__(self):

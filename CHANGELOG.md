@@ -1,5 +1,23 @@
 # Changelog
 
+### Version 0.1.21
+- **Bedrock — capability-aware request body construction.** Each Claude model on Bedrock now gets a request body that matches what it accepts. The new `smartllm.bedrock.capabilities` module is the single source of truth.
+  - **Opus 4.7 / 4.8** — `temperature`, `top_p`, `top_k` are dropped (with a logged warning) instead of being sent and 400'd by Bedrock. Manual thinking budgets (`thinking.type=enabled`) are converted to adaptive thinking (`thinking.type=adaptive` + sibling `output_config.effort`).
+  - **Opus 4.6** — also routed through adaptive thinking; sampling parameters are still accepted.
+  - **Sonnet 4.6 and earlier** — unchanged behavior (manual thinking budget, full sampling parameters).
+  - **Older / unknown Claude models** — permissive defaults (sampling accepted, no thinking).
+- **Bedrock — `MessageRequest` parity.** `MessageRequest` now exposes `reasoning_effort`, `budget_tokens`, `top_p`, `top_k`. Multi-turn (`send_message`, `send_message_stream`) supports extended thinking on Claude.
+- **Bedrock — public capability inspection.** `BedrockLLMClient.get_model_capabilities(model_id)` returns a `ModelCapabilities` dataclass; `BedrockLLMClient.supports_thinking(model_id)` is a shortcut. Also exported as `smartllm.bedrock.capabilities.get_model_capabilities` / `supports_thinking`.
+- **Bedrock — tolerant tool-use parsing.** When structured output (`response_format`) lands as JSON-encoded strings inside the tool-use payload (observed on Sonnet 4.6 with non-English prompts), `_parse_response` retries with `json.loads` before raising. Pass-2 of the two-pass thinking + structure flow also instructs the model to return native arrays/objects.
+- **Bedrock — defaults bumped.** `BEDROCK_DEFAULT_MODEL` is now `eu.anthropic.claude-sonnet-4-6`; `BEDROCK_DEFAULT_REGION` is now `eu-north-1`. `DEFAULT_MODEL_QUOTAS` recognises Claude 4.x families and Amazon Nova.
+- **Tests — split conftest.** Unit tests in `tests/unit/` no longer prompt for a model. The `--model` picker moved to `tests/integration/conftest.py` and is TTY-aware (interactive in a real terminal, non-interactive elsewhere). Default model in `tests/models.toml` is now Bedrock-first.
+
+**Backwards-compatibility notes (0.1.20 → 0.1.21):**
+- `MessageRequest` and the new public methods are additive.
+- `top_p` / `top_k` now reach modern Claude when explicitly set; previously they were silently dropped. On Sonnet 4.5 / Haiku 4.5 specifically, Bedrock rejects setting both `temperature` and `top_p` — narrow edge case.
+- Cache keys for thinking-enabled requests use `request.budget_tokens` (often `None`) directly instead of the resolved integer. Existing cached entries won't hit on the new key — one-time cache rebuild, no correctness issue.
+- Private method `BedrockLLMClient._resolve_thinking_budget` was removed (replaced by `_resolve_thinking_request` returning `bool`).
+
 ### Version 0.1.10
 - Cache `data` no longer duplicates `prompt`/`messages`/`response_format` — these are stored only in the top-level `metadata`, reducing storage size
 

@@ -15,8 +15,12 @@ DEFAULT_RETRY_DELAY = 1.0
 DEFAULT_MAX_RETRY_DELAY = 60.0
 
 # Provider-specific defaults
-BEDROCK_DEFAULT_MODEL = "anthropic.claude-3-sonnet-20240229-v1:0"
-BEDROCK_DEFAULT_REGION = "us-east-1"
+# NOTE: Modern Anthropic models on Bedrock are inference-profile-only — pass an
+# inference profile ID (e.g. `eu.…`, `us.…`, `global.…`) here, not a bare
+# foundation model ID. The default below targets eu-north-1; switch to a
+# `us.` / `global.` profile if running in a US region.
+BEDROCK_DEFAULT_MODEL = "eu.anthropic.claude-sonnet-4-6"
+BEDROCK_DEFAULT_REGION = "eu-north-1"
 BEDROCK_DEFAULT_TOP_P = 0.9
 BEDROCK_DEFAULT_TOP_K = 250
 

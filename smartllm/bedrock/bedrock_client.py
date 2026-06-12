@@ -10,10 +10,16 @@ from typing import Optional, AsyncIterator, List, Dict, Any, Type, Callable
 from pydantic import BaseModel
 from logorator import Logger
 from .config import BedrockConfig
+from .capabilities import (
+    ModelCapabilities,
+    get_model_capabilities as _get_model_capabilities,
+    supports_thinking as _supports_thinking,
+    ADAPTIVE_EFFORT_LEVELS,
+)
 from ..models import (
-    TextRequest, 
+    TextRequest,
     MessageRequest,
-    TextResponse, 
+    TextResponse,
     StreamChunk,
 )
 from ..utils import pydantic_to_tool_schema, TwoLevelCache, retry_on_error
@@ -43,16 +49,30 @@ CHARS_PER_TOKEN_ESTIMATE = 4
 # Maximum characters of the prompt included in progress events.
 PROMPT_PREVIEW_LENGTH = 200
 
-# Default Bedrock model quotas for concurrency limiting
+# Default Bedrock model quotas for concurrency limiting.
+#
+# Patterns are substring-matched against the model ID (lowercased), so they
+# work for both bare foundation IDs ("anthropic.claude-...") and inference
+# profile IDs with region prefixes ("eu.anthropic.claude-...", "us.…",
+# "global.…"). Order matters: the first pattern that appears in the model ID
+# wins, so list more specific patterns before more general ones.
 DEFAULT_MODEL_QUOTAS = {
+    # Anthropic Claude 4.x family (Sonnet / Opus) — modern inference profiles
+    'claude-opus-4': {'rpm': 50, 'tpm': 200000, 'concurrent': 1},
+    'claude-sonnet-4': {'rpm': 200, 'tpm': 400000, 'concurrent': 2},
+    # Anthropic Claude 3.x family — legacy
+    'claude-3-7-sonnet': {'rpm': 200, 'tpm': 400000, 'concurrent': 2},
     'claude-3-5-sonnet-v2': {'rpm': 10, 'tpm': 200000, 'concurrent': 1},
     'claude-3-5-sonnet': {'rpm': 200, 'tpm': 400000, 'concurrent': 2},
+    'claude-3-5-haiku': {'rpm': 400, 'tpm': 400000, 'concurrent': 5},
     'claude-3-sonnet': {'rpm': 200, 'tpm': 400000, 'concurrent': 2},
     'claude-3-haiku': {'rpm': 400, 'tpm': 400000, 'concurrent': 5},
     'claude-3-opus': {'rpm': 50, 'tpm': 200000, 'concurrent': 1},
+    # Other providers
     'llama': {'rpm': 500, 'tpm': 500000, 'concurrent': 5},
     'mistral': {'rpm': 300, 'tpm': 300000, 'concurrent': 3},
     'titan': {'rpm': 400, 'tpm': 400000, 'concurrent': 5},
+    'nova': {'rpm': 400, 'tpm': 400000, 'concurrent': 5},
 }
 
 
@@ -349,13 +369,13 @@ class BedrockLLMClient:
 
         # 2. Resolve parameters using same logic as generate_text
         model = request.model or self.config.default_model
-        thinking_budget = self._resolve_thinking_budget(request)
+        thinking_requested = self._resolve_thinking_request(request, model)
         temperature = request.temperature if request.temperature is not None else 0
         on_progress = request.on_progress
 
         # 3. Cache key — same logic as generate_text
         cache_key = None
-        if temperature == 0 or thinking_budget:
+        if temperature == 0 or thinking_requested:
             cache_key = self._generate_cache_key(
                 model=model,
                 prompt=request.prompt,
@@ -365,7 +385,7 @@ class BedrockLLMClient:
                 system_prompt=request.system_prompt,
                 response_format=None,  # Always None (structured output rejected above)
                 reasoning_effort=request.reasoning_effort,
-                budget_tokens=thinking_budget,
+                budget_tokens=request.budget_tokens,
             )
 
         # 4. Handle clear_cache
@@ -405,29 +425,23 @@ class BedrockLLMClient:
             else:
                 on_progress(event)
 
-        # 7. Build request body
+        # 7. Build request body via the family-dispatching helper.
+        # For Claude, this delegates to the capability-aware _build_claude_body
+        # (handles thinking shape + sampling-param filtering).
+        # For Llama/Mistral, the historical inline body is used.
         max_tokens = request.max_tokens or self.config.max_tokens
-        if thinking_budget:
-            if thinking_budget >= max_tokens:
-                max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "messages": [{"role": "user", "content": request.prompt}],
-                "max_tokens": max_tokens,
-                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-            }
-            if request.system_prompt:
-                body["system"] = request.system_prompt
-        else:
-            body = self._build_request_body(
-                model=model,
-                prompt=request.prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=request.top_p or self.config.top_p,
-                top_k=request.top_k or self.config.top_k,
-                system_prompt=request.system_prompt,
-            )
+        body = self._build_request_body(
+            model=model,
+            prompt=request.prompt,
+            temperature=temperature if not thinking_requested else None,
+            max_tokens=max_tokens,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            system_prompt=request.system_prompt,
+            reasoning_effort=request.reasoning_effort,
+            budget_tokens=request.budget_tokens,
+        )
+        max_tokens = body.get("max_tokens", max_tokens)
 
         # 8. Acquire semaphore, open stream, consume, assemble response
         semaphore = self._get_semaphore(model)
@@ -519,7 +533,7 @@ class BedrockLLMClient:
                     "top_p": request.top_p or self.config.top_p,
                     "top_k": request.top_k or self.config.top_k,
                     "reasoning_effort": request.reasoning_effort,
-                    "budget_tokens": thinking_budget,
+                    "budget_tokens": request.budget_tokens,
                 }
                 self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
             result.cache_key = cache_key
@@ -594,23 +608,215 @@ class BedrockLLMClient:
     def __str__(self):
         return f"BedrockLLMClient(default={self.config.default_model})"
 
-    def _resolve_thinking_budget(self, request: TextRequest) -> Optional[int]:
-        """Resolve the thinking budget from request parameters.
-        
-        Returns budget_tokens if thinking is requested, None otherwise.
-        Priority: budget_tokens > reasoning_effort mapping.
+    @staticmethod
+    def get_model_capabilities(model_id: str) -> ModelCapabilities:
+        """Inspect what a Claude model on Bedrock will accept in the request body.
+
+        Useful for callers who route across many models and want to adapt their
+        request shape (e.g. drop `temperature`, downgrade thinking to adaptive)
+        before calling. For non-Claude or unrecognised IDs, returns a permissive
+        default.
         """
-        if request.budget_tokens:
-            return max(request.budget_tokens, MIN_THINKING_BUDGET)
-        if request.reasoning_effort:
-            budget = BEDROCK_THINKING_BUDGET.get(request.reasoning_effort)
-            if budget is None:
+        return _get_model_capabilities(model_id)
+
+    @staticmethod
+    def supports_thinking(model_id: str) -> bool:
+        """Whether `model_id` supports any form of extended thinking."""
+        return _supports_thinking(model_id)
+
+    @staticmethod
+    def _validate_tool_input(tool_input: Any, response_format: Type[BaseModel]) -> BaseModel:
+        """Validate tool-use input against a Pydantic model, tolerantly.
+
+        Bedrock occasionally returns complex fields (lists, nested objects) as
+        JSON-encoded strings instead of native JSON values, particularly on
+        non-English content with the two-pass thinking + structure flow. This
+        method first attempts a strict validation; on failure it walks the dict
+        once and tries `json.loads` on any string values that look like a JSON
+        array or object, then retries.
+        """
+        # Top-level may itself be a string — handle that first.
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except (ValueError, json.JSONDecodeError):
+                pass  # let the validator raise the right error
+
+        try:
+            return response_format.model_validate(tool_input)
+        except Exception:
+            # Retry once after coercing any stringified JSON values.
+            if not isinstance(tool_input, dict):
+                raise
+            coerced: Dict[str, Any] = {}
+            for k, v in tool_input.items():
+                if isinstance(v, str):
+                    stripped = v.lstrip()
+                    if stripped.startswith("[") or stripped.startswith("{"):
+                        try:
+                            coerced[k] = json.loads(v)
+                            continue
+                        except (ValueError, json.JSONDecodeError):
+                            pass
+                coerced[k] = v
+            return response_format.model_validate(coerced)
+
+    def _resolve_thinking_request(self, request: TextRequest, model: str) -> bool:
+        """Whether the caller is asking for extended thinking AND the model supports it.
+
+        The actual thinking shape (manual budget vs. adaptive effort) is decided
+        inside `_build_claude_body`; this method only answers the dispatch
+        question "do we route to a thinking-capable code path?".
+        """
+        wants = request.reasoning_effort is not None or request.budget_tokens is not None
+        if not wants:
+            return False
+        caps = _get_model_capabilities(model)
+        if caps.thinking_mode == "none":
+            logger.warning(
+                f"Model {model} does not support extended thinking; "
+                f"reasoning_effort/budget_tokens will be ignored."
+            )
+            return False
+        return True
+
+    def _build_claude_body(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        max_tokens: int,
+        *,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        response_format: Optional[Type[BaseModel]] = None,
+        reasoning_effort: Optional[str] = None,
+        budget_tokens: Optional[int] = None,
+        force_tool_use: bool = True,
+    ) -> Dict[str, Any]:
+        """Build a Bedrock-Anthropic request body, respecting per-model capabilities.
+
+        Sampling parameters and thinking configuration are included only if the
+        target model accepts them. Callers pass everything they have; the helper
+        decides what makes it into the body.
+
+        For thinking-capable models, the helper accepts both `reasoning_effort`
+        (preferred) and `budget_tokens`. The mode (manual budget vs. adaptive
+        effort) is determined by the model's capabilities.
+
+        Args:
+            model: The Bedrock model ID or inference profile ID.
+            messages: Anthropic-shaped messages list.
+            max_tokens: Cap on output tokens. Auto-extended for manual thinking
+                budgets that meet or exceed this value.
+            temperature/top_p/top_k: Sampling controls; dropped silently for
+                models that reject them (with a warning).
+            system_prompt: Optional system prompt.
+            response_format: Optional Pydantic model for structured output via
+                forced tool use.
+            reasoning_effort: "low" | "medium" | "high". Used directly on
+                adaptive models; mapped via `BEDROCK_THINKING_BUDGET` on
+                manual-budget models.
+            budget_tokens: Explicit thinking budget. Used on manual-budget
+                models; logged-and-mapped to nearest effort on adaptive ones.
+            force_tool_use: When True, sets `tool_choice` to force the response
+                format tool. False is reserved for cases where tools should be
+                offered without forcing.
+
+        Returns:
+            A dict ready to be JSON-serialized as the Bedrock request body.
+        """
+        caps = _get_model_capabilities(model)
+
+        body: Dict[str, Any] = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+
+        # --- Sampling controls ---
+        if temperature is not None:
+            if caps.accepts_temperature:
+                body["temperature"] = temperature
+            else:
+                logger.warning(f"Model {model} does not accept 'temperature'; ignored.")
+        if top_p is not None:
+            if caps.accepts_top_p_top_k:
+                body["top_p"] = top_p
+            else:
+                logger.warning(f"Model {model} does not accept 'top_p'; ignored.")
+        if top_k is not None:
+            if caps.accepts_top_p_top_k:
+                body["top_k"] = top_k
+            else:
+                logger.warning(f"Model {model} does not accept 'top_k'; ignored.")
+
+        # --- System prompt ---
+        if system_prompt:
+            body["system"] = system_prompt
+
+        # --- Extended thinking ---
+        wants_thinking = reasoning_effort is not None or budget_tokens is not None
+        if wants_thinking and caps.thinking_mode != "none":
+            if caps.thinking_mode == "manual_budget":
+                resolved_budget = self._resolve_manual_budget(reasoning_effort, budget_tokens)
+                body["thinking"] = {"type": "enabled", "budget_tokens": resolved_budget}
+                if resolved_budget >= body["max_tokens"]:
+                    body["max_tokens"] = resolved_budget + THINKING_BUDGET_HEADROOM
+            else:  # adaptive_effort
+                effort = self._resolve_adaptive_effort(reasoning_effort, budget_tokens, model)
+                body["thinking"] = {"type": "adaptive"}
+                body["output_config"] = {"effort": effort}
+        elif wants_thinking:
+            # caps.thinking_mode == "none"; already warned in _resolve_thinking_request
+            # but defensive log here too in case caller bypassed the dispatch helper
+            logger.warning(f"Model {model} does not support thinking; thinking parameters dropped.")
+
+        # --- Structured output via forced tool use ---
+        if response_format is not None:
+            tool_schema = pydantic_to_tool_schema(response_format)
+            body["tools"] = [tool_schema]
+            if force_tool_use:
+                body["tool_choice"] = {"type": "tool", "name": tool_schema["name"]}
+
+        return body
+
+    @staticmethod
+    def _resolve_manual_budget(reasoning_effort: Optional[str], budget_tokens: Optional[int]) -> int:
+        """Resolve thinking budget for models using `thinking.type=enabled`."""
+        if budget_tokens is not None:
+            return max(budget_tokens, MIN_THINKING_BUDGET)
+        # reasoning_effort is the only remaining input
+        budget = BEDROCK_THINKING_BUDGET.get(reasoning_effort)
+        if budget is None:
+            raise ValueError(
+                f"Invalid reasoning_effort '{reasoning_effort}'. "
+                f"Must be one of: {', '.join(BEDROCK_THINKING_BUDGET.keys())}"
+            )
+        return max(budget, MIN_THINKING_BUDGET)
+
+    @staticmethod
+    def _resolve_adaptive_effort(reasoning_effort: Optional[str], budget_tokens: Optional[int], model: str) -> str:
+        """Resolve effort label for models using `thinking.type=adaptive`."""
+        if reasoning_effort is not None:
+            if reasoning_effort not in ADAPTIVE_EFFORT_LEVELS:
                 raise ValueError(
-                    f"Invalid reasoning_effort '{request.reasoning_effort}'. "
-                    f"Must be one of: {', '.join(BEDROCK_THINKING_BUDGET.keys())}"
+                    f"Invalid reasoning_effort '{reasoning_effort}' for adaptive thinking on {model}. "
+                    f"Must be one of: {', '.join(ADAPTIVE_EFFORT_LEVELS)}"
                 )
-            return budget
-        return None
+            return reasoning_effort
+        # Only budget_tokens given; map to nearest effort label.
+        # Mapping uses the same thresholds as the manual-budget reasoning_effort table.
+        effort = "low"
+        if budget_tokens >= BEDROCK_THINKING_BUDGET["high"]:
+            effort = "high"
+        elif budget_tokens >= BEDROCK_THINKING_BUDGET["medium"]:
+            effort = "medium"
+        logger.warning(
+            f"Model {model} uses adaptive thinking; mapped budget_tokens={budget_tokens} -> effort={effort}."
+        )
+        return effort
 
     @Logger(exclude_args=[])
     async def generate_text(self, request: TextRequest) -> TextResponse:
@@ -619,13 +825,13 @@ class BedrockLLMClient:
             await self._init_client()
             
         model = request.model or self.config.default_model
-        thinking_budget = self._resolve_thinking_budget(request)
+        thinking_requested = self._resolve_thinking_request(request, model)
         # If no temperature specified, use 0 (deterministic + cacheable)
         temperature = request.temperature if request.temperature is not None else 0
         
         # Generate cache key for this specific request
         cache_key = None
-        if (temperature == 0 or thinking_budget) and not request.stream:
+        if (temperature == 0 or thinking_requested) and not request.stream:
             cache_key = self._generate_cache_key(
                 model=model,
                 prompt=request.prompt,
@@ -635,7 +841,7 @@ class BedrockLLMClient:
                 system_prompt=request.system_prompt,
                 response_format=request.response_format.__name__ if request.response_format else None,
                 reasoning_effort=request.reasoning_effort,
-                budget_tokens=thinking_budget,
+                budget_tokens=request.budget_tokens,
             )
         
         if request.clear_cache and cache_key:
@@ -651,21 +857,19 @@ class BedrockLLMClient:
                 return result
 
         prompt_preview = request.prompt[:60] + "..." if len(request.prompt) > 60 else request.prompt
-        Logger.note(f"{model} | temp={temperature} | thinking={thinking_budget or 'off'} | {prompt_preview}")
+        Logger.note(f"{model} | temp={temperature} | thinking={'on' if thinking_requested else 'off'} | {prompt_preview}")
         
         # Two-pass approach when both thinking and structured output are requested
-        if thinking_budget and request.response_format:
+        if thinking_requested and request.response_format:
             result = await self._generate_with_thinking_and_structure(
                 request=request,
                 model=model,
                 temperature=temperature,
-                thinking_budget=thinking_budget,
             )
-        elif thinking_budget:
+        elif thinking_requested:
             result = await self._generate_with_thinking(
                 request=request,
                 model=model,
-                thinking_budget=thinking_budget,
             )
         else:
             result = await self._generate_standard(
@@ -685,7 +889,7 @@ class BedrockLLMClient:
                 "top_p": request.top_p or self.config.top_p,
                 "top_k": request.top_k or self.config.top_k,
                 "reasoning_effort": request.reasoning_effort,
-                "budget_tokens": thinking_budget,
+                "budget_tokens": request.budget_tokens,
             }
             self.cache.set(cache_key, self._serialize_response(result), cache_metadata)
         result.cache_key = cache_key
@@ -698,8 +902,8 @@ class BedrockLLMClient:
             prompt=request.prompt,
             temperature=temperature,
             max_tokens=request.max_tokens or self.config.max_tokens,
-            top_p=request.top_p or self.config.top_p,
-            top_k=request.top_k or self.config.top_k,
+            top_p=request.top_p,
+            top_k=request.top_k,
             system_prompt=request.system_prompt,
             response_format=request.response_format,
         )
@@ -726,21 +930,18 @@ class BedrockLLMClient:
         Logger.note(f"{result.input_tokens} in / {result.output_tokens} out | {result.text[:50]}")
         return result
 
-    async def _generate_with_thinking(self, request: TextRequest, model: str, thinking_budget: int) -> TextResponse:
+    async def _generate_with_thinking(self, request: TextRequest, model: str) -> TextResponse:
         """Generation with extended thinking, no structured output."""
         max_tokens = request.max_tokens or self.config.max_tokens
-        # budget_tokens must be less than max_tokens
-        if thinking_budget >= max_tokens:
-            max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
-
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [{"role": "user", "content": request.prompt}],
-            "max_tokens": max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-        }
-        if request.system_prompt:
-            body["system"] = request.system_prompt
+        body = self._build_claude_body(
+            model=model,
+            messages=[{"role": "user", "content": request.prompt}],
+            max_tokens=max_tokens,
+            system_prompt=request.system_prompt,
+            reasoning_effort=request.reasoning_effort,
+            budget_tokens=request.budget_tokens,
+        )
+        max_tokens = body["max_tokens"]  # may have been bumped to fit thinking budget
 
         semaphore = self._get_semaphore(model)
         async with semaphore:
@@ -764,7 +965,7 @@ class BedrockLLMClient:
         return result
 
     async def _generate_with_thinking_and_structure(
-        self, request: TextRequest, model: str, temperature: float, thinking_budget: int
+        self, request: TextRequest, model: str, temperature: float
     ) -> TextResponse:
         """Two-pass: thinking first, then structured extraction.
         
@@ -773,17 +974,15 @@ class BedrockLLMClient:
         """
         # --- Pass 1: Think ---
         max_tokens = request.max_tokens or self.config.max_tokens
-        if thinking_budget >= max_tokens:
-            max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
-
-        body_pass1 = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [{"role": "user", "content": request.prompt}],
-            "max_tokens": max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-        }
-        if request.system_prompt:
-            body_pass1["system"] = request.system_prompt
+        body_pass1 = self._build_claude_body(
+            model=model,
+            messages=[{"role": "user", "content": request.prompt}],
+            max_tokens=max_tokens,
+            system_prompt=request.system_prompt,
+            reasoning_effort=request.reasoning_effort,
+            budget_tokens=request.budget_tokens,
+        )
+        max_tokens = body_pass1["max_tokens"]
 
         semaphore = self._get_semaphore(model)
         async with semaphore:
@@ -802,22 +1001,23 @@ class BedrockLLMClient:
             Logger.note(f"Pass 1 (thinking): {pass1_result.input_tokens} in / {pass1_result.output_tokens} out (thinking={pass1_result.reasoning_tokens})")
 
             # --- Pass 2: Structure extraction ---
-            tool_schema = pydantic_to_tool_schema(request.response_format)
+            # No thinking on pass 2; force the response_format tool. The hint about
+            # native arrays/objects addresses an observed Bedrock quirk where
+            # complex fields occasionally arrive as JSON-encoded strings.
             extraction_prompt = (
                 "Extract the content from the following text into the required structured format. "
                 "Map the information to the schema fields as accurately as possible. "
-                "Do not add, invent, or omit any information — use only what is provided.\n\n"
+                "Do not add, invent, or omit any information — use only what is provided. "
+                "Return list and object values as native JSON arrays/objects, never as JSON-encoded strings.\n\n"
                 f"---\n{pass1_result.text}\n---"
             )
-
-            body_pass2 = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "messages": [{"role": "user", "content": extraction_prompt}],
-                "max_tokens": request.max_tokens or self.config.max_tokens,
-                "temperature": 0,
-                "tools": [tool_schema],
-                "tool_choice": {"type": "tool", "name": tool_schema["name"]},
-            }
+            body_pass2 = self._build_claude_body(
+                model=model,
+                messages=[{"role": "user", "content": extraction_prompt}],
+                max_tokens=request.max_tokens or self.config.max_tokens,
+                temperature=0,
+                response_format=request.response_format,
+            )
 
             response2 = await self._invoke_model_with_retry(
                 on_progress=request.on_progress,
@@ -868,30 +1068,21 @@ class BedrockLLMClient:
             await self._init_client()
             
         model = request.model or self.config.default_model
-        thinking_budget = self._resolve_thinking_budget(request)
+        thinking_requested = self._resolve_thinking_request(request, model)
 
-        if thinking_budget:
-            max_tokens = request.max_tokens or self.config.max_tokens
-            if thinking_budget >= max_tokens:
-                max_tokens = thinking_budget + THINKING_BUDGET_HEADROOM
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "messages": [{"role": "user", "content": request.prompt}],
-                "max_tokens": max_tokens,
-                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-            }
-            if request.system_prompt:
-                body["system"] = request.system_prompt
-        else:
-            body = self._build_request_body(
-                model=model,
-                prompt=request.prompt,
-                temperature=request.temperature or self.config.temperature,
-                max_tokens=request.max_tokens or self.config.max_tokens,
-                top_p=request.top_p or self.config.top_p,
-                top_k=request.top_k or self.config.top_k,
-                system_prompt=request.system_prompt,
-            )
+        # Dispatch by model family — supports Claude (with thinking) plus
+        # Llama/Mistral via the historical body shapes.
+        body = self._build_request_body(
+            model=model,
+            prompt=request.prompt,
+            temperature=None if thinking_requested else (request.temperature if request.temperature is not None else self.config.temperature),
+            max_tokens=request.max_tokens or self.config.max_tokens,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            system_prompt=request.system_prompt,
+            reasoning_effort=request.reasoning_effort,
+            budget_tokens=request.budget_tokens,
+        )
 
         try:
             response = await self.client.invoke_model_with_response_stream(
@@ -931,19 +1122,22 @@ class BedrockLLMClient:
             await self._init_client()
             
         model = request.model or self.config.default_model
+        thinking_requested = self._resolve_thinking_request(request, model)
         # If no temperature specified, use 0 (deterministic + cacheable)
         temperature = request.temperature if request.temperature is not None else 0
         
         # Generate cache key for this specific request
         cache_key = None
-        if temperature == 0 and not request.stream:
+        if (temperature == 0 or thinking_requested) and not request.stream:
             messages_str = json.dumps([{"role": m.role, "content": m.content} for m in request.messages])
             cache_key = self._generate_cache_key(
                 model=model,
                 messages=messages_str,
                 max_tokens=request.max_tokens or self.config.max_tokens,
                 system_prompt=request.system_prompt,
-                response_format=request.response_format.__name__ if request.response_format else None
+                response_format=request.response_format.__name__ if request.response_format else None,
+                reasoning_effort=request.reasoning_effort,
+                budget_tokens=request.budget_tokens,
             )
         
         if request.clear_cache and cache_key:
@@ -959,24 +1153,22 @@ class BedrockLLMClient:
                 return result
         
         last_msg = request.messages[-1].content[:60] if request.messages else ""
-        Logger.note(f"{model} | {len(request.messages)} messages | {last_msg}")
+        Logger.note(f"{model} | {len(request.messages)} messages | thinking={'on' if thinking_requested else 'off'} | {last_msg}")
         
         messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
         
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": messages,
-            "max_tokens": request.max_tokens or self.config.max_tokens,
-            "temperature": temperature,
-        }
-        
-        if request.system_prompt:
-            body["system"] = request.system_prompt
-            
-        if request.response_format and "claude" in model.lower():
-            tool_schema = pydantic_to_tool_schema(request.response_format)
-            body["tools"] = [tool_schema]
-            body["tool_choice"] = {"type": "tool", "name": tool_schema["name"]}
+        body = self._build_claude_body(
+            model=model,
+            messages=messages,
+            max_tokens=request.max_tokens or self.config.max_tokens,
+            temperature=None if thinking_requested else temperature,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            system_prompt=request.system_prompt,
+            response_format=request.response_format if "claude" in model.lower() else None,
+            reasoning_effort=request.reasoning_effort,
+            budget_tokens=request.budget_tokens,
+        )
 
         try:
             semaphore = self._get_semaphore(model)
@@ -1029,18 +1221,20 @@ class BedrockLLMClient:
             await self._init_client()
             
         model = request.model or self.config.default_model
-        
+        thinking_requested = self._resolve_thinking_request(request, model)
+
         messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
-        
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": messages,
-            "max_tokens": request.max_tokens or self.config.max_tokens,
-            "temperature": request.temperature or self.config.temperature,
-        }
-        
-        if request.system_prompt:
-            body["system"] = request.system_prompt
+        body = self._build_claude_body(
+            model=model,
+            messages=messages,
+            max_tokens=request.max_tokens or self.config.max_tokens,
+            temperature=None if thinking_requested else (request.temperature if request.temperature is not None else self.config.temperature),
+            top_p=request.top_p,
+            top_k=request.top_k,
+            system_prompt=request.system_prompt,
+            reasoning_effort=request.reasoning_effort,
+            budget_tokens=request.budget_tokens,
+        )
 
         try:
             response = await self.client.invoke_model_with_response_stream(
@@ -1063,55 +1257,70 @@ class BedrockLLMClient:
         self,
         model: str,
         prompt: str,
-        temperature: float,
+        temperature: Optional[float],
         max_tokens: int,
-        top_p: float,
-        top_k: int,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
         system_prompt: Optional[str] = None,
         response_format: Optional[Type[BaseModel]] = None,
+        reasoning_effort: Optional[str] = None,
+        budget_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Build request body for text generation based on model type"""
-        
+        """Build a request body for text generation, dispatching by model family.
+
+        For Claude models we delegate to the capability-aware `_build_claude_body`
+        so that newer models (Opus 4.7+, etc.) get the right shape. For Llama and
+        Mistral we keep the historical inline construction. Thinking parameters
+        are forwarded to Claude and ignored elsewhere (Llama/Mistral on Bedrock
+        don't expose extended thinking).
+
+        `temperature=None` is interpreted as "omit if the model rejects it,
+        otherwise fall back to the config default" — Llama/Mistral always
+        require a temperature, so it's resolved against `self.config.temperature`
+        for those branches.
+        """
         if "claude" in model.lower():
-            # Claude 3+ models use Messages API
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
-            if system_prompt:
-                body["system"] = system_prompt
-            if response_format:
-                tool_schema = pydantic_to_tool_schema(response_format)
-                body["tools"] = [tool_schema]
-                body["tool_choice"] = {"type": "tool", "name": tool_schema["name"]}
-        elif "llama" in model.lower():
-            # Llama models
-            body = {
+            return self._build_claude_body(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                system_prompt=system_prompt,
+                response_format=response_format,
+                reasoning_effort=reasoning_effort,
+                budget_tokens=budget_tokens,
+            )
+        if reasoning_effort is not None or budget_tokens is not None:
+            logger.warning(
+                f"Model {model} does not support extended thinking; "
+                f"reasoning_effort/budget_tokens will be ignored."
+            )
+        # Llama/Mistral/generic require a numeric temperature.
+        resolved_temperature = temperature if temperature is not None else self.config.temperature
+        resolved_top_p = top_p if top_p is not None else self.config.top_p
+        if "llama" in model.lower():
+            return {
                 "prompt": prompt,
                 "max_gen_len": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
+                "temperature": resolved_temperature,
+                "top_p": resolved_top_p,
             }
-        elif "mistral" in model.lower():
-            # Mistral models
-            body = {
+        if "mistral" in model.lower():
+            return {
                 "prompt": prompt,
                 "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
+                "temperature": resolved_temperature,
+                "top_p": resolved_top_p,
             }
-        else:
-            # Default/generic format
-            body = {
-                "prompt": prompt,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-            }
-        
-        return body
+        # Default/generic format
+        return {
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": resolved_temperature,
+            "top_p": resolved_top_p,
+        }
 
     def _parse_response(self, response_body: Dict[str, Any], model: str, response_format: Optional[Type[BaseModel]] = None) -> TextResponse:
         """Parse response based on model type"""
@@ -1121,13 +1330,15 @@ class BedrockLLMClient:
                 raise ValueError("Bedrock truncated structured output (stop_reason=max_tokens)")
             # Check for tool use (structured output)
             content = response_body.get("content", [])
-            if content and content[0].get("type") == "tool_use" and response_format:
-                tool_input = content[0].get("input", {})
-                structured_data = response_format.model_validate(tool_input)
-                text = json.dumps(tool_input, indent=2)
+            tool_block = next((b for b in content if b.get("type") == "tool_use"), None)
+            if tool_block is not None and response_format:
+                tool_input = tool_block.get("input", {})
+                structured_data = self._validate_tool_input(tool_input, response_format)
+                text = json.dumps(tool_input, indent=2) if isinstance(tool_input, dict) else str(tool_input)
             else:
                 # Regular text response
-                text = response_body["content"][0]["text"]
+                text_block = next((b for b in content if b.get("type") == "text"), None)
+                text = text_block.get("text", "") if text_block else ""
                 structured_data = None
             input_tokens = response_body.get("usage", {}).get("input_tokens", 0)
             output_tokens = response_body.get("usage", {}).get("output_tokens", 0)

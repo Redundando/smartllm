@@ -26,8 +26,9 @@ class BedrockConfig:
         aws_access_key_id: AWS access key ID
         aws_secret_access_key: AWS secret access key
         aws_session_token: AWS session token (optional)
-        aws_region: AWS region (default: us-east-1)
-        default_model: Default Bedrock model ID
+        aws_region: AWS region (default: eu-north-1)
+        default_model: Default Bedrock model ID (inference profile ID for
+            modern Anthropic models, e.g. `eu.anthropic.claude-sonnet-4-6`)
         temperature: Sampling temperature (0-1)
         max_tokens: Maximum output tokens
         top_p: Nucleus sampling parameter

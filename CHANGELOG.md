@@ -1,5 +1,14 @@
 # Changelog
 
+### Version 0.1.23
+- **Bedrock — region resolution now matches boto3.** Resolution chain: explicit `aws_region=` arg → `AWS_REGION` → `AWS_DEFAULT_REGION` → package default. AWS environments (Lambda, ECS, EC2 with default profile) commonly set only `AWS_DEFAULT_REGION`, which 0.1.21/0.1.22 ignored — leading to surprising "model identifier is invalid" errors when consumers used cross-region inference profile IDs. Reported by package consumer.
+- **Bedrock — defaults reverted to `us-east-1`.** `BEDROCK_DEFAULT_REGION = "us-east-1"`, `BEDROCK_DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"`. The brief EU-default in 0.1.21/0.1.22 was a regression for the typical AWS deployment.
+- **Bedrock — region hint on misleading errors.** When Bedrock returns "The provided model identifier is invalid" (which it does for both genuinely-invalid IDs and IDs that are valid but not deployed in the current region), `_maybe_log_region_hint` emits a one-line warning naming the resolved region and suggesting consumers check region/model alignment.
+- **Bedrock — startup region log.** `_init_client` logs `Bedrock client initialized in region '<region>' (default model: <id>)` at info level so consumers can spot region/model mismatches up front.
+
+### Version 0.1.22
+- *(no functional change; metadata-only release)*
+
 ### Version 0.1.21
 - **Bedrock — capability-aware request body construction.** Each Claude model on Bedrock now gets a request body that matches what it accepts. The new `smartllm.bedrock.capabilities` module is the single source of truth.
   - **Opus 4.7 / 4.8** — `temperature`, `top_p`, `top_k` are dropped (with a logged warning) instead of being sent and 400'd by Bedrock. Manual thinking budgets (`thinking.type=enabled`) are converted to adaptive thinking (`thinking.type=adaptive` + sibling `output_config.effort`).

@@ -121,6 +121,10 @@ class BedrockLLMClient:
             self.models_client = await session.client(
                 "bedrock", config=boto_config, **creds
             ).__aenter__()
+            logger.info(
+                f"Bedrock client initialized in region '{self.config.aws_region}' "
+                f"(default model: {self.config.default_model})"
+            )
         except ImportError:
             raise ImportError("aioboto3 is required. Install with: pip install aioboto3")
         except Exception:
@@ -181,7 +185,31 @@ class BedrockLLMClient:
         async def _invoke():
             return await self.client.invoke_model(**kwargs)
         
-        return await _invoke()
+        try:
+            return await _invoke()
+        except Exception as e:
+            self._maybe_log_region_hint(e, model)
+            raise
+
+    def _maybe_log_region_hint(self, error: Exception, model: str) -> None:
+        """If the error looks like a region/model-availability mismatch, log a hint.
+
+        Bedrock returns "The provided model identifier is invalid." for both
+        genuinely invalid IDs and IDs that are valid but not deployed in the
+        current region. The latter is the more common case for cross-region
+        inference profile users (e.g. us.anthropic.* on a client bound to
+        eu-north-1). We add a one-line hint so consumers don't waste time
+        chasing the model ID when the region is the actual culprit.
+        """
+        msg = str(error)
+        if "model identifier" not in msg.lower():
+            return
+        logger.warning(
+            f"Bedrock rejected model '{model}' in region '{self.config.aws_region}'. "
+            f"If the ID is correct, the region likely doesn't host this inference "
+            f"profile. Set AWS_REGION/AWS_DEFAULT_REGION or pass aws_region= to match "
+            f"a region where '{model}' is published."
+        )
 
     def _make_retry_handler(self, on_progress, model, max_tokens):
         """Create retry handler that logs context and fires on_progress callback"""
@@ -475,6 +503,7 @@ class BedrockLLMClient:
                     last_error = e
                     # Non-retryable or last attempt → raise
                     if not is_retryable_error(e) or attempt == self.config.max_retries:
+                        self._maybe_log_region_hint(e, model)
                         raise
                     # Retryable: discard accumulated chunks, fire retry event, backoff
                     stream_result = None
@@ -1112,7 +1141,8 @@ class BedrockLLMClient:
                     if text:
                         yield StreamChunk(text=text, model=model)
                         
-        except Exception:
+        except Exception as e:
+            self._maybe_log_region_hint(e, model)
             raise
 
     @Logger(exclude_args=[])
@@ -1250,7 +1280,8 @@ class BedrockLLMClient:
                     if text:
                         yield StreamChunk(text=text, model=model)
                         
-        except Exception:
+        except Exception as e:
+            self._maybe_log_region_hint(e, model)
             raise
 
     def _build_request_body(

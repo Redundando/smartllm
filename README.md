@@ -59,11 +59,13 @@ export OPENAI_MODEL="gpt-4o-mini"  # optional
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
-export AWS_REGION="eu-north-1"
-export BEDROCK_MODEL="eu.anthropic.claude-sonnet-4-6"  # optional (use an inference profile ID)
+export AWS_REGION="us-east-1"        # or AWS_DEFAULT_REGION (boto3-compatible chain)
+export BEDROCK_MODEL="us.anthropic.claude-sonnet-4-6"  # optional (use an inference profile ID)
 export BEDROCK_READ_TIMEOUT="300"   # HTTP read timeout in seconds (default: 300)
 export BEDROCK_CONNECT_TIMEOUT="10" # HTTP connect timeout in seconds (default: 10)
 ```
+
+Region resolution mirrors boto3: explicit `aws_region=` constructor arg → `AWS_REGION` → `AWS_DEFAULT_REGION` → package default (`us-east-1`). EC2/ECS/Lambda environments commonly set only `AWS_DEFAULT_REGION`, which is now respected.
 
 Explicit credentials are optional. If omitted, boto3's default credential chain is used — including EC2 instance profiles, ECS task roles, Lambda execution roles, and `~/.aws/credentials`.
 

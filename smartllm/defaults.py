@@ -16,11 +16,13 @@ DEFAULT_MAX_RETRY_DELAY = 60.0
 
 # Provider-specific defaults
 # NOTE: Modern Anthropic models on Bedrock are inference-profile-only — pass an
-# inference profile ID (e.g. `eu.…`, `us.…`, `global.…`) here, not a bare
-# foundation model ID. The default below targets eu-north-1; switch to a
-# `us.` / `global.` profile if running in a US region.
-BEDROCK_DEFAULT_MODEL = "eu.anthropic.claude-sonnet-4-6"
-BEDROCK_DEFAULT_REGION = "eu-north-1"
+# inference profile ID (e.g. `us.…`, `eu.…`, `global.…`) here, not a bare
+# foundation model ID. The defaults below match boto3's most common region
+# (us-east-1) where Anthropic publishes the widest model coverage. Override
+# via constructor args, BEDROCK_MODEL/AWS_REGION/AWS_DEFAULT_REGION env vars,
+# or by mutating these constants.
+BEDROCK_DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
+BEDROCK_DEFAULT_REGION = "us-east-1"
 BEDROCK_DEFAULT_TOP_P = 0.9
 BEDROCK_DEFAULT_TOP_K = 250
 

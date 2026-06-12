@@ -26,9 +26,10 @@ class BedrockConfig:
         aws_access_key_id: AWS access key ID
         aws_secret_access_key: AWS secret access key
         aws_session_token: AWS session token (optional)
-        aws_region: AWS region (default: eu-north-1)
+        aws_region: AWS region. Resolution chain (boto3-compatible):
+            constructor arg > AWS_REGION > AWS_DEFAULT_REGION > package default.
         default_model: Default Bedrock model ID (inference profile ID for
-            modern Anthropic models, e.g. `eu.anthropic.claude-sonnet-4-6`)
+            modern Anthropic models, e.g. `us.anthropic.claude-sonnet-4-6`)
         temperature: Sampling temperature (0-1)
         max_tokens: Maximum output tokens
         top_p: Nucleus sampling parameter
@@ -63,7 +64,16 @@ class BedrockConfig:
         self.aws_access_key_id = aws_access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
         self.aws_secret_access_key = aws_secret_access_key or os.getenv("AWS_SECRET_ACCESS_KEY")
         self.aws_session_token = aws_session_token or os.getenv("AWS_SESSION_TOKEN")
-        self.aws_region = aws_region or os.getenv("AWS_REGION", BEDROCK_DEFAULT_REGION)
+        # Region resolution mirrors boto3:
+        #   explicit arg > AWS_REGION > AWS_DEFAULT_REGION > package default.
+        # Many AWS environments (Lambda, ECS, EC2 with default profile)
+        # only set AWS_DEFAULT_REGION, so honoring both is important.
+        self.aws_region = (
+            aws_region
+            or os.getenv("AWS_REGION")
+            or os.getenv("AWS_DEFAULT_REGION")
+            or BEDROCK_DEFAULT_REGION
+        )
         
         # Default model configurations
         self.default_model = default_model or os.getenv("BEDROCK_MODEL", BEDROCK_DEFAULT_MODEL)

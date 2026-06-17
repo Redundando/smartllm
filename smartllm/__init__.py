@@ -22,6 +22,21 @@ from .models import (
 # Unified client (primary interface)
 from .unified import LLMClient, LLMConfig
 
+# Bedrock-specific exception classes (re-exported so consumers can catch
+# `BedrockError` without reaching into the provider package). Importing
+# from the bedrock package is gated on the boto3 dependency being present;
+# we wrap in a try/except so OpenAI-only installs still work.
+try:
+    from .bedrock.exceptions import (
+        BedrockError,
+        BedrockStreamError,
+        BedrockStreamTimeoutError,
+    )
+except ImportError:  # pragma: no cover - optional dependency
+    BedrockError = None  # type: ignore[assignment]
+    BedrockStreamError = None  # type: ignore[assignment]
+    BedrockStreamTimeoutError = None  # type: ignore[assignment]
+
 # Defaults (users can modify these)
 from . import defaults
 
@@ -43,7 +58,12 @@ __all__ = [
     # Unified client (primary interface)
     "LLMClient",
     "LLMConfig",
-    
+
+    # Bedrock-specific exceptions (None when bedrock extras not installed)
+    "BedrockError",
+    "BedrockStreamError",
+    "BedrockStreamTimeoutError",
+
     # Defaults module
     "defaults",
 ]

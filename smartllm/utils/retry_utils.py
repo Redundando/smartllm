@@ -26,6 +26,8 @@ def is_retryable_error(error: Exception) -> bool:
     - AWS throttling and server errors
     - HTTP 5xx errors
     - Timeout and rate limit errors
+    - Bedrock stream-level transient errors (BedrockStreamError with a
+      retryable error_type, such as throttlingException or modelTimeoutException)
     
     Args:
         error: Exception to check
@@ -33,6 +35,18 @@ def is_retryable_error(error: Exception) -> bool:
     Returns:
         True if error should be retried
     """
+    # Bedrock-specific exceptions (BedrockStreamError,
+    # BedrockStreamTimeoutError) carry their own retryability classification
+    # via the `is_retryable` property. Check first so we don't accidentally
+    # fall through to the string heuristic below — the timeout error's
+    # message contains the word "timeout" which would otherwise match.
+    try:
+        from ..bedrock.exceptions import BedrockError
+        if isinstance(error, BedrockError):
+            return getattr(error, "is_retryable", False)
+    except ImportError:
+        pass
+
     try:
         from botocore.exceptions import ClientError
         

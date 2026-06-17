@@ -16,6 +16,11 @@ from .capabilities import (
     supports_thinking as _supports_thinking,
     ADAPTIVE_EFFORT_LEVELS,
 )
+from .exceptions import (
+    BedrockStreamError,
+    BedrockStreamTimeoutError,
+    STREAM_ERROR_EVENT_KEYS,
+)
 from ..models import (
     TextRequest,
     MessageRequest,
@@ -240,6 +245,126 @@ class BedrockLLMClient:
 
         return _handle_retry
 
+    async def _iter_stream_safely(
+        self,
+        response_stream,
+        first_chunk_timeout: Optional[float] = None,
+        total_timeout: Optional[float] = None,
+    ):
+        """Iterate a Bedrock response stream with error and timeout guards.
+
+        Wraps the raw async iterable returned by
+        `invoke_model_with_response_stream` with three robustness behaviors:
+
+        1. **Stream-level error events** (e.g. `throttlingException`,
+           `modelStreamErrorException`) are detected and raised as
+           `BedrockStreamError`. The unwrapped boto stream silently delivers
+           these as separate top-level keys; without this guard they would
+           be skipped, leaving the caller with a half-empty response and no
+           signal that anything went wrong.
+
+        2. **First-chunk timeout** raises `BedrockStreamTimeoutError(
+           kind="first_chunk")` when no event arrives within
+           `first_chunk_timeout` seconds of stream open. This catches the
+           queue-on-TPM-saturation case where the request is accepted but
+           never starts producing.
+
+        3. **Total stream timeout** raises `BedrockStreamTimeoutError(
+           kind="total")` when the full stream does not finish within
+           `total_timeout` seconds. This catches half-closed connections
+           that would otherwise hang until the OS-level TCP keepalive fires.
+
+        Both timeouts treat values <=0 (or None) as disabled.
+
+        Yields:
+            Chunk events (dicts containing a "chunk" key). Non-chunk,
+            non-error events are logged at WARNING level and skipped, so
+            downstream code can iterate naively.
+        """
+        # Defaults from config; allow caller to override (e.g., tests).
+        if first_chunk_timeout is None:
+            first_chunk_timeout = self.config.stream_first_chunk_timeout
+        if total_timeout is None:
+            total_timeout = self.config.stream_total_timeout
+
+        fc_enabled = first_chunk_timeout is not None and first_chunk_timeout > 0
+        tot_enabled = total_timeout is not None and total_timeout > 0
+
+        iterator = response_stream.__aiter__()
+        t0 = time.monotonic()
+        first_chunk_received = False
+
+        while True:
+            elapsed = time.monotonic() - t0
+
+            # Compute the deadline for the next event. We take the minimum
+            # of the remaining first-chunk budget and the remaining total
+            # budget, so whichever fires first wins.
+            wait_timeout = None
+            if tot_enabled:
+                tot_remaining = total_timeout - elapsed
+                if tot_remaining <= 0:
+                    raise BedrockStreamTimeoutError(kind="total", elapsed=elapsed)
+                wait_timeout = tot_remaining
+            if not first_chunk_received and fc_enabled:
+                fc_remaining = first_chunk_timeout - elapsed
+                if fc_remaining <= 0:
+                    raise BedrockStreamTimeoutError(kind="first_chunk", elapsed=elapsed)
+                wait_timeout = fc_remaining if wait_timeout is None else min(wait_timeout, fc_remaining)
+
+            try:
+                if wait_timeout is None:
+                    event = await iterator.__anext__()
+                else:
+                    event = await asyncio.wait_for(
+                        iterator.__anext__(), timeout=wait_timeout
+                    )
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                elapsed = time.monotonic() - t0
+                # Distinguish first-chunk vs. total. The first-chunk timeout
+                # only applies before the first event has arrived; if we got
+                # here without a first chunk and within the first-chunk
+                # window, attribute the timeout to that.
+                if (
+                    not first_chunk_received
+                    and fc_enabled
+                    and elapsed >= first_chunk_timeout
+                ):
+                    raise BedrockStreamTimeoutError(
+                        kind="first_chunk", elapsed=elapsed
+                    )
+                raise BedrockStreamTimeoutError(kind="total", elapsed=elapsed)
+
+            # Detect stream-level error events. AWS delivers these as separate
+            # top-level keys; they must be raised explicitly because the
+            # async-for loop would otherwise terminate normally with whatever
+            # partial state had accumulated.
+            for err_key in STREAM_ERROR_EVENT_KEYS:
+                if err_key in event:
+                    payload = event[err_key]
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    raise BedrockStreamError(
+                        error_type=err_key,
+                        message=payload.get("message", ""),
+                        raw=event,
+                    )
+
+            if "chunk" not in event:
+                # Unknown event shape — log so we learn about it and can
+                # extend STREAM_ERROR_EVENT_KEYS if needed. Don't yield, so
+                # downstream code can assume every yielded event has a chunk.
+                logger.warning(
+                    "smartllm: unrecognized Bedrock stream event keys=%s",
+                    list(event.keys()),
+                )
+                continue
+
+            first_chunk_received = True
+            yield event
+
     async def _consume_stream(
         self,
         response_stream,
@@ -281,10 +406,9 @@ class BedrockLLMClient:
             else:
                 on_progress(event)
 
-        async for event in response_stream:
-            if "chunk" not in event:
-                continue
-
+        async for event in self._iter_stream_safely(response_stream):
+            # _iter_stream_safely guarantees every yielded event has a "chunk"
+            # key (it raises on errors and skips/logs unrecognized shapes).
             chunk_data = json.loads(event["chunk"]["bytes"])
             event_type = chunk_data.get("type", "")
 
@@ -1119,28 +1243,30 @@ class BedrockLLMClient:
                 body=json.dumps(body),
                 contentType="application/json",
             )
-            
-            async for event in response["body"]:
-                if "chunk" in event:
-                    chunk_data = json.loads(event["chunk"]["bytes"])
-                    # Handle thinking deltas
-                    if chunk_data.get("type") == "content_block_delta":
-                        delta = chunk_data.get("delta", {})
-                        if delta.get("type") == "thinking_delta":
-                            thinking_text = delta.get("thinking", "")
-                            if thinking_text:
-                                yield StreamChunk(text=thinking_text, model=model, metadata={"type": "thinking"})
-                            continue
-                        elif delta.get("type") == "text_delta":
-                            text = delta.get("text", "")
-                            if text:
-                                yield StreamChunk(text=text, model=model)
-                            continue
-                    # Fallback for non-thinking responses
-                    text = self._extract_text_from_chunk(chunk_data, model)
-                    if text:
-                        yield StreamChunk(text=text, model=model)
-                        
+
+            # _iter_stream_safely raises BedrockStreamError on stream-level
+            # error events and BedrockStreamTimeoutError on stalls, so we
+            # don't silently drop them or hang indefinitely.
+            async for event in self._iter_stream_safely(response["body"]):
+                chunk_data = json.loads(event["chunk"]["bytes"])
+                # Handle thinking deltas
+                if chunk_data.get("type") == "content_block_delta":
+                    delta = chunk_data.get("delta", {})
+                    if delta.get("type") == "thinking_delta":
+                        thinking_text = delta.get("thinking", "")
+                        if thinking_text:
+                            yield StreamChunk(text=thinking_text, model=model, metadata={"type": "thinking"})
+                        continue
+                    elif delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        if text:
+                            yield StreamChunk(text=text, model=model)
+                        continue
+                # Fallback for non-thinking responses
+                text = self._extract_text_from_chunk(chunk_data, model)
+                if text:
+                    yield StreamChunk(text=text, model=model)
+
         except Exception as e:
             self._maybe_log_region_hint(e, model)
             raise
@@ -1272,14 +1398,14 @@ class BedrockLLMClient:
                 body=json.dumps(body),
                 contentType="application/json",
             )
-            
-            async for event in response["body"]:
-                if "chunk" in event:
-                    chunk_data = json.loads(event["chunk"]["bytes"])
-                    text = self._extract_text_from_chunk(chunk_data, model)
-                    if text:
-                        yield StreamChunk(text=text, model=model)
-                        
+
+            # _iter_stream_safely raises on stream-level errors and timeouts.
+            async for event in self._iter_stream_safely(response["body"]):
+                chunk_data = json.loads(event["chunk"]["bytes"])
+                text = self._extract_text_from_chunk(chunk_data, model)
+                if text:
+                    yield StreamChunk(text=text, model=model)
+
         except Exception as e:
             self._maybe_log_region_hint(e, model)
             raise

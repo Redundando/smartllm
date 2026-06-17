@@ -40,6 +40,13 @@ class BedrockConfig:
         max_concurrent: Maximum concurrent requests (optional)
         read_timeout: HTTP read timeout in seconds (default: 300)
         connect_timeout: HTTP connect timeout in seconds (default: 10)
+        stream_total_timeout: Maximum seconds a streaming request may run from
+            stream open until completion. Triggers `BedrockStreamTimeoutError`
+            with kind="total". Set to 0 or negative to disable. Default: 900.
+        stream_first_chunk_timeout: Maximum seconds to wait for the first
+            event after a streaming request is accepted by Bedrock. Triggers
+            `BedrockStreamTimeoutError` with kind="first_chunk". Set to 0 or
+            negative to disable. Default: 60.
     """
 
     def __init__(
@@ -59,6 +66,8 @@ class BedrockConfig:
         max_concurrent: Optional[int] = None,
         read_timeout: Optional[int] = None,
         connect_timeout: Optional[int] = None,
+        stream_total_timeout: Optional[float] = None,
+        stream_first_chunk_timeout: Optional[float] = None,
     ):
         # AWS Credentials: explicit args > environment variables
         self.aws_access_key_id = aws_access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
@@ -93,6 +102,22 @@ class BedrockConfig:
         # HTTP timeout configurations
         self.read_timeout = read_timeout if read_timeout is not None else int(os.getenv("BEDROCK_READ_TIMEOUT", "300"))
         self.connect_timeout = connect_timeout if connect_timeout is not None else int(os.getenv("BEDROCK_CONNECT_TIMEOUT", "10"))
+
+        # Streaming-specific timeouts. These guard against the failure modes
+        # where Bedrock's streaming API accepts a request but then either
+        # delays the first event indefinitely (TPM-saturation queueing) or
+        # half-closes the connection mid-stream. Both are documented at:
+        # tmp/smartllm-observability-bug-report.md (issues 2 and 3).
+        self.stream_total_timeout = (
+            stream_total_timeout
+            if stream_total_timeout is not None
+            else float(os.getenv("BEDROCK_STREAM_TOTAL_TIMEOUT", "900"))
+        )
+        self.stream_first_chunk_timeout = (
+            stream_first_chunk_timeout
+            if stream_first_chunk_timeout is not None
+            else float(os.getenv("BEDROCK_STREAM_FIRST_CHUNK_TIMEOUT", "60"))
+        )
 
     def validate(self) -> bool:
         """Validate that required AWS credentials are present

@@ -61,8 +61,10 @@ export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
 export AWS_REGION="us-east-1"        # or AWS_DEFAULT_REGION (boto3-compatible chain)
 export BEDROCK_MODEL="us.anthropic.claude-sonnet-4-6"  # optional (use an inference profile ID)
-export BEDROCK_READ_TIMEOUT="300"   # HTTP read timeout in seconds (default: 300)
-export BEDROCK_CONNECT_TIMEOUT="10" # HTTP connect timeout in seconds (default: 10)
+export BEDROCK_READ_TIMEOUT="300"    # HTTP read timeout in seconds (default: 300)
+export BEDROCK_CONNECT_TIMEOUT="10"  # HTTP connect timeout in seconds (default: 10)
+export BEDROCK_STREAM_TOTAL_TIMEOUT="900"        # stream total timeout in seconds (default: 900)
+export BEDROCK_STREAM_FIRST_CHUNK_TIMEOUT="60"   # first-chunk timeout in seconds (default: 60)
 ```
 
 Region resolution mirrors boto3: explicit `aws_region=` constructor arg → `AWS_REGION` → `AWS_DEFAULT_REGION` → package default (`us-east-1`). EC2/ECS/Lambda environments commonly set only `AWS_DEFAULT_REGION`, which is now respected.
@@ -187,6 +189,81 @@ response = await client.generate_text_streamed(
 |-------|--------|
 | `stream_progress` | `text_tokens_so_far`, `text_so_far`, `elapsed_seconds` |
 | `stream_thinking` | `thinking_tokens_so_far`, `thinking_text_so_far`, `elapsed_seconds` |
+
+### Bedrock Streaming Error Handling
+
+All three Bedrock streaming methods (`generate_text_streamed`, `generate_text_stream`, `send_message_stream`) detect stream-level error events and stalled connections, raising structured exceptions instead of hanging or silently returning empty results.
+
+**Exception hierarchy:**
+
+```
+Exception
+  └── BedrockError                    (catch-all base)
+        ├── BedrockStreamError        (stream-level error event)
+        └── BedrockStreamTimeoutError (no first chunk / overall stall)
+```
+
+```python
+from smartllm import (
+    BedrockError,
+    BedrockStreamError,
+    BedrockStreamTimeoutError,
+)
+
+try:
+    response = await client.generate_text_streamed(request)
+except BedrockStreamError as e:
+    # AWS delivered a stream-level error event (throttling, validation, etc.)
+    print(f"{e.error_type}: {e.message}")
+    if e.is_retryable:
+        # throttlingException, modelTimeoutException,
+        # serviceUnavailableException, internalServerException
+        ...
+except BedrockStreamTimeoutError as e:
+    # Stream stalled. e.kind is "first_chunk" or "total".
+    print(f"{e.kind} timeout after {e.elapsed:.1f}s")
+except BedrockError:
+    # Catch-all for any Bedrock-specific failure
+    ...
+```
+
+**`BedrockStreamError`** is raised when AWS delivers a top-level error event in the response stream. Without this guard the events would be silently dropped and the caller would receive an empty `TextResponse`. Detected event types:
+
+| `error_type` | Retryable | Cause |
+|---|---|---|
+| `throttlingException` | yes | TPM/RPM saturation server-side |
+| `modelTimeoutException` | yes | Model took too long to start |
+| `serviceUnavailableException` | yes | Bedrock backend transient failure |
+| `internalServerException` | yes | Bedrock internal error |
+| `modelStreamErrorException` | no | Stream-encoding error from the model |
+| `validationException` | no | Request body rejected |
+
+Retryable errors automatically participate in the existing retry loop in `generate_text_streamed` (governed by `BedrockConfig.max_retries`).
+
+**`BedrockStreamTimeoutError`** is raised when the stream stalls past one of two configurable budgets:
+
+| `kind` | Default | Config field | Description |
+|---|---|---|---|
+| `first_chunk` | 60s | `stream_first_chunk_timeout` | No event arrived after the request was accepted (typically TPM-saturation queueing) |
+| `total` | 900s | `stream_total_timeout` | Stream did not finish within the total budget |
+
+Set either to `0` to disable. Override via constructor or env vars (`BEDROCK_STREAM_TOTAL_TIMEOUT`, `BEDROCK_STREAM_FIRST_CHUNK_TIMEOUT`).
+
+```python
+from smartllm.bedrock import BedrockConfig, BedrockLLMClient
+
+config = BedrockConfig(
+    aws_region="us-east-1",
+    stream_total_timeout=1800,     # 30 minutes for very long generations
+    stream_first_chunk_timeout=30, # fail fast on queueing
+)
+async with BedrockLLMClient(config=config) as client:
+    ...
+```
+
+Stream timeouts are **not retryable by default** — they indicate sustained issues rather than transient ones. Wrap your own retry policy if appropriate.
+
+Unrecognized stream event types (anything that isn't a `chunk` or one of the documented error keys) are logged at WARNING level on the `smartllm` logger and skipped. This makes new event shapes from boto3 updates discoverable without breaking the call.
 
 ### Reasoning Models
 
